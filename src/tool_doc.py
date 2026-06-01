@@ -58,6 +58,7 @@ TOOL_INTENT_REGISTRY = {
             "keyword_args": {"nykaa": {"search": "Nykaa"}},
             "city_filter": {"key": "name"},
             "field_triggers": {"opening balance": "openingBalance", "opening": "openingBalance"},
+            "param_aliases": {"name": "search"},
         },
     },
 
@@ -131,6 +132,7 @@ TOOL_INTENT_REGISTRY = {
             "default_fields": ["name", "id", "hsnCode", "closingQty"],
             "ensure_fields": ["name", "hsnCode", "closingQty"],
             "field_triggers": {"value": "closingValue"},
+            "param_aliases": {"name": "term"},
         },
     },
 
@@ -171,6 +173,7 @@ TOOL_INTENT_REGISTRY = {
             },
             "date_keywords": ["gst", "b2b", "grand total", "b2c", "exports", "nil", "exempt", "igst", "cgst", "sgst", "cess", "taxable", "invoice"],
             "remove_filters": True,
+            "category_to_filter": True,
             "category_map": {
                 "b2b": "b2b",
                 "grand total": "grandTotal",
@@ -181,6 +184,7 @@ TOOL_INTENT_REGISTRY = {
                 "nil rated": "nillRated",
                 "nil": "nillRated",
                 "exempt": "nillRated",
+                "exempted": "nillRated",
             },
             "field_triggers": {
                 "taxable amount": "taxableAmount",
@@ -261,6 +265,21 @@ TOOL_INTENT_REGISTRY = {
         },
     },
 }
+
+
+# Auto-generate no-space variants for category_map keys
+# e.g., "b2c small" → also add "b2csmall"
+for _tool_name, _meta in TOOL_INTENT_REGISTRY.items():
+    _repair = _meta.get("repair", {})
+    _cat_map = _repair.get("category_map")
+    if _cat_map and isinstance(_cat_map, dict):
+        _no_space_variants = {}
+        for _kw, _val in _cat_map.items():
+            if " " in _kw:
+                _compact = _kw.replace(" ", "")
+                if _compact not in _cat_map:
+                    _no_space_variants[_compact] = _val
+        _cat_map.update(_no_space_variants)
 
 
 def get_field_triggers(tool_name: str) -> dict[str, list[str]]:

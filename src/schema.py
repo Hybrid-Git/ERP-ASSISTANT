@@ -29,7 +29,8 @@ class MainState(TypedDict):
     skip_router: bool
     unsupported_parts: list[str]
 
-
+    conversation_summary: str #Conversation's summary
+    
 class OutputState(TypedDict):
     final_response: str
     tools_utilized: List[str]   

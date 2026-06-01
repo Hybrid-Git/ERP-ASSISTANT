@@ -17,6 +17,7 @@ TCS_OUTSTANDING_ENDPOINT = "/reports/tcs-outstanding"
 api_cache_ttl_secs = 600  # 10 minutes
 api_cache = {}
 
+
 def make_cache_key(endpoint: str, body: dict) -> str:
     return f"{endpoint}::{json.dumps(body, sort_keys=True, ensure_ascii=False)}"
 
@@ -143,9 +144,10 @@ def match_filter(actual, expected):
                 return False
 
         return True
+
     act_str = normalize_value(actual)
     exp_str = normalize_value(expected)
-    
+
     # Allow matching if it is an exact match OR if the expected code/word is a substring of the actual value
     return exp_str == act_str or (exp_str and exp_str in act_str)
     # return normalize_value(actual) == normalize_value(expected)
@@ -331,6 +333,9 @@ def get_gst_summary(
         "to": to_date,
     }
 
+    if filters:
+        body["filters"] = filters
+
     result = cached_api_post(GST_SUMMARY_ENDPOINT, body=body)
     result = flatten_gst_summary_result(result)
     result = project_result(result, fields=fields, filters=filters)
@@ -360,13 +365,15 @@ def get_tds_outstanding(
         "limit": limit,
     }
 
+    if filters:
+        body["filters"] = filters
+
     result = cached_api_post(TDS_OUTSTANDING_ENDPOINT, body=body)
     result = append_report_summary_row(result, "tdsOutstanding")
     result = project_result(result, fields=fields, filters=filters)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
-
 
 @tool
 def get_tcs_outstanding(
@@ -388,6 +395,9 @@ def get_tcs_outstanding(
         "page": page,
         "limit": limit,
     }
+
+    if filters:
+        body["filters"] = filters
 
     result = cached_api_post(TCS_OUTSTANDING_ENDPOINT, body=body)
     result = append_report_summary_row(result, "tcsOutstanding")
@@ -421,6 +431,9 @@ def get_customer(
         "search": search or "",
         "limit": limit,
     }
+
+    if filters:
+        body["filters"] = filters
 
     result = cached_api_post(CUSTOMER_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
@@ -468,6 +481,9 @@ def get_customer_ledger(
         "page": page,
         "limit": limit,
     }
+
+    if filters:
+        body["filters"] = filters
 
     result = cached_api_post(CUSTOMER_LEDGER_ENDPOINT, body=body)
 
@@ -545,6 +561,9 @@ def get_stock_levels(
         "sortField": sort_field or "name",
         "sortOrder": sort_order or "asc",
     }
+
+    if filters:
+        body["filters"] = filters
 
     result = cached_api_post(STOCK_LEVELS_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
