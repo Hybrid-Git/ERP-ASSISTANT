@@ -252,9 +252,69 @@ def format_value_dynamically(value: Any, indent_level: int = 1) -> str:
     return str(value)
 
 
-def format_response_as_text(response_data: dict) -> str:
+# def format_response_as_text(response_data: dict) -> str:
+#     """
+#     Replaced static presentation loop with dynamic parsing layout engine.
+#     """
+#     status = response_data.get("status", "")
+#     summary = response_data.get("summary", "")
+#     query = response_data.get("query", "")
+#     tools_used = response_data.get("tools_used", [])
+#     data = response_data.get("data", {})
+#     errors = response_data.get("errors", [])
+#     unsupported = response_data.get("unsupported_parts", [])
+
+#     lines = []
+#     lines.append("=" * 70)
+#     lines.append("                      ERP ASSISTANT REPORT")
+#     lines.append("=" * 70)
+
+#     lines.append(f"\n USER QUERY: {query}")
+#     lines.append(f" RUN STATUS: {status.upper()}")
+
+#     if summary:
+#         lines.append(f" SUMMARY:    {summary}")
+
+#     if tools_used:
+#         # Format the technical tool names visually cleaner
+#         readable_tools = [t.replace("get_", "").replace("_", " ").upper() for t in tools_used]
+#         lines.append(f" ENGINES:    {', '.join(readable_tools)}")
+
+#     if data:
+#         for tool_name, records in data.items():
+#             if not records:
+#                 continue
+            
+#             section_header = tool_name.replace("get_", "").replace("_", " ").upper()
+#             lines.append(f"\n▶ [{section_header}]")
+#             lines.append("─" * 40)
+            
+#             for record in records:
+#                 if isinstance(record, dict):
+#                     for key, value in record.items():
+#                         cleaned_key = clean_key_dynamically(key)
+#                         formatted_val = format_value_dynamically(value, indent_level=2)
+#                         lines.append(f"  ▪ {cleaned_key}: {formatted_val}")
+#                     lines.append("  " + "┈" * 20)
+
+#     if errors:
+#         lines.append(f"\n ERRORS ({len(errors)}):")
+#         for err in errors:
+#             if isinstance(err, dict):
+#                 lines.append(f"  - {err.get('error', err)}")
+#             else:
+#                 lines.append(f"  - {err}")
+
+#     if unsupported:
+#         lines.append(f"\n UNSUPPORTED REQS: {', '.join(unsupported)}")
+
+#     lines.append("\n" + "=" * 70)
+#     return "\n".join(lines)
+
+def format_response_as_text(response_data: dict, timings: list = None, total_time: float = None) -> str:
     """
-    Replaced static presentation loop with dynamic parsing layout engine.
+    Completely dynamic text presentation engine.
+    Accepts graph metrics to output node-by-node execution logs.
     """
     status = response_data.get("status", "")
     summary = response_data.get("summary", "")
@@ -266,19 +326,18 @@ def format_response_as_text(response_data: dict) -> str:
 
     lines = []
     lines.append("=" * 70)
-    lines.append("                      ERP ASSISTANT REPORT")
+    lines.append("                      📢 ERP ASSISTANT REPORT")
     lines.append("=" * 70)
 
-    lines.append(f"\n USER QUERY: {query}")
-    lines.append(f" RUN STATUS: {status.upper()}")
+    lines.append(f"\n📝 USER QUERY: {query}")
+    lines.append(f"🚦 RUN STATUS: {status.upper()}")
 
     if summary:
-        lines.append(f" SUMMARY:    {summary}")
+        lines.append(f"📊 SUMMARY:    {summary}")
 
     if tools_used:
-        # Format the technical tool names visually cleaner
         readable_tools = [t.replace("get_", "").replace("_", " ").upper() for t in tools_used]
-        lines.append(f" ENGINES:    {', '.join(readable_tools)}")
+        lines.append(f"⚙️ ENGINES:    {', '.join(readable_tools)}")
 
     if data:
         for tool_name, records in data.items():
@@ -298,7 +357,7 @@ def format_response_as_text(response_data: dict) -> str:
                     lines.append("  " + "┈" * 20)
 
     if errors:
-        lines.append(f"\n ERRORS ({len(errors)}):")
+        lines.append(f"\n❌ ERRORS ({len(errors)}):")
         for err in errors:
             if isinstance(err, dict):
                 lines.append(f"  - {err.get('error', err)}")
@@ -306,12 +365,23 @@ def format_response_as_text(response_data: dict) -> str:
                 lines.append(f"  - {err}")
 
     if unsupported:
-        lines.append(f"\n UNSUPPORTED REQS: {', '.join(unsupported)}")
+        lines.append(f"\n⚠️ UNSUPPORTED REQS: {', '.join(unsupported)}")
+
+    # 🚀 NEW: DYNAMIC PERFORMANCE LOGGING (Zero Hardcoding)
+    if timings:
+        lines.append("\n⏱️ PERFORMANCE LOGS")
+        lines.append("─" * 40)
+        for timing in timings:
+            # Dynamically pull and clean the node identity and duration string
+            node_label = clean_key_dynamically(timing.get("node", "Unknown Node"))
+            duration = timing.get("duration_sec", 0.0)
+            lines.append(f"  ▪ {node_label}: {duration}s")
+            
+        if total_time:
+            lines.append(f"  ▪ Total Turnaround Time: {total_time}s")
 
     lines.append("\n" + "=" * 70)
     return "\n".join(lines)
-
-
 
 
 
@@ -675,7 +745,11 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
         output_format = fmt or DEFAULT_OUTPUT_FORMAT
 
         if output_format == "text":
-            text = format_response_as_text(result["response"])
+            text = format_response_as_text(
+                response_data=result["response"],
+                timings=result.get("timings", []),
+                total_time=result.get("total_time_sec",0.0),
+                )
             return PlainTextResponse(text)
 
         return result

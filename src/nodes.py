@@ -1234,7 +1234,9 @@ async def chat_model_node(state: MainState):
             if not repair:
                 return {"name": name, "args": args}
 
-            q_lower = (user_query or "").lower()
+            # 🚀 STRICT FIELD COVERAGE: Merge raw & canonical streams to capture every single token
+            combined_q = f"{original_query or ''} {state.get('canonical_query', '') or ''}".lower()
+
             q_upper = (user_query or "").upper()
             worker_has = {}
             if args:
@@ -1243,30 +1245,38 @@ async def chat_model_node(state: MainState):
                     if v and re.match(r"\d{4}-\d{2}-\d{2}", str(v)):
                         worker_has[dk] = v
             new_args = dict(repair.get("base_args", {})) if repair.get("overwrite") else dict(args or {})
-            # Preserve worker's valid dates (worker is more reliable than extraction)
+            
+            # Preserve worker's valid dates
             for dk, dv in worker_has.items():
                 new_args[dk] = dv
 
             for kw, kwar in repair.get("keyword_args", {}).items():
-                if kw.lower() in q_lower:
+                if kw.lower() in combined_q:
                     new_args.update(kwar)
 
             city_cfg = repair.get("city_filter")
             if city_cfg:
-                matched = [c for c in CITY_WORDS if c in q_upper]
+                matched = [c for c in CITY_WORDS if c in combined_q.upper()]
                 if len(matched) == 1:
                     new_args["filters"] = {city_cfg.get("key", "name"): {"contains": matched[0]}}
 
             if repair.get("hsn_extract"):
-                hsn_match = re.search(r"\b(\d{8})\b", user_query or "")
+                hsn_match = re.search(r"\b(\d{8})\b", combined_q)
                 if hsn_match:
                     hsn = hsn_match.group(1)
                     new_args["term"] = hsn
                     new_args["filters"] = {"hsnCode": hsn}
                     fields = list(repair.get("default_fields", ["name", "id", "hsnCode", "closingQty"]))
-                    for kw, fld in repair.get("field_triggers", {}).items():
-                        if kw.lower() in q_lower and fld not in fields:
-                            fields.append(fld)
+                    
+                    # 🚀 STRICT FIELD COVERAGE (HSN Phase): Scan with strict token word boundaries
+                    all_triggers = get_field_triggers(name)
+                    for kw, triggered_fields in all_triggers.items():
+                        match_found = kw in combined_q if " " in kw else bool(re.search(rf"\b{re.escape(kw)}\b", combined_q))
+                        if match_found:
+                            for fld in triggered_fields:
+                                if fld not in fields:
+                                    fields.append(fld)
+                                    
                     new_args["fields"] = fields
                     return {"name": name, "args": new_args}
 
@@ -1274,7 +1284,7 @@ async def chat_model_node(state: MainState):
             if cat_map:
                 matched = []
                 for kw, val in cat_map.items():
-                    if kw in q_lower:
+                    if kw in combined_q:
                         matched.append(val)
                 if len(matched) == 1:
                     new_args["category"] = matched[0]
@@ -1284,13 +1294,13 @@ async def chat_model_node(state: MainState):
                     new_args.pop("category", None)
 
             if repair.get("extract_customer_id"):
-                cm = re.search(r"customer\s*id\s*[:#-]?\s*(\d+)", user_query or "")
+                cm = re.search(r"customer\s*id\s*[:#-]?\s*(\d+)", combined_q)
                 if cm:
                     new_args["customer_id"] = int(cm.group(1))
 
             date_kws = repair.get("date_keywords")
             if date_kws and (not new_args.get("from_date") or not new_args.get("to_date")):
-                f, t = extract_date_range_for_tool(user_query, date_kws)
+                f, t = extract_date_range_for_tool(combined_q, date_kws)
                 if f:
                     new_args["from_date"] = f
                     new_args["to_date"] = t
@@ -1316,18 +1326,22 @@ async def chat_model_node(state: MainState):
                 if f not in new_args.get("fields", []):
                     new_args.setdefault("fields", []).append(f)
 
-            field_triggers = repair.get("field_triggers", {})
-            if field_triggers:
+            # 🚀 STRICT FIELD COVERAGE (Fallback Phase): Global registry cross-examination
+            all_triggers = get_field_triggers(name)
+            if all_triggers:
                 fields = list(new_args.get("fields") or [])
-                for kw, fld in field_triggers.items():
-                    if kw.lower() in q_lower and fld not in fields:
-                        fields.append(fld)
+                for kw, triggered_fields in all_triggers.items():
+                    match_found = kw in combined_q if " " in kw else bool(re.search(rf"\b{re.escape(kw)}\b", combined_q))
+                    if match_found:
+                        for fld in triggered_fields:
+                            if fld not in fields:
+                                fields.append(fld)
                 new_args["fields"] = fields
 
             strict_kws = repair.get("strict_field_keywords", {})
             if strict_kws:
                 for kw_exact, narrow_fields in strict_kws.items():
-                    if kw_exact in q_lower:
+                    if kw_exact in combined_q:
                         new_args["fields"] = list(narrow_fields)
                         break
 
@@ -1340,7 +1354,7 @@ async def chat_model_node(state: MainState):
                 print(f"[{name.upper()} FINAL ARGS] {json.dumps(new_args, default=str)}")
 
             return {"name": name, "args": new_args}
-
+        
         def _repair_tool_call(name: str, args: dict) -> dict | None:
             name = TOOL_NAME_ALIASES.get(name, name)
             if name not in tools_dict:
