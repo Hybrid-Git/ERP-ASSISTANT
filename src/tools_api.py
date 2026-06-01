@@ -143,8 +143,12 @@ def match_filter(actual, expected):
                 return False
 
         return True
-
-    return normalize_value(actual) == normalize_value(expected)
+    act_str = normalize_value(actual)
+    exp_str = normalize_value(expected)
+    
+    # Allow matching if it is an exact match OR if the expected code/word is a substring of the actual value
+    return exp_str == act_str or (exp_str and exp_str in act_str)
+    # return normalize_value(actual) == normalize_value(expected)
 
 
 def apply_filters(records, filters=None):

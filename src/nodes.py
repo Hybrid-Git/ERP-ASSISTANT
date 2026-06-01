@@ -21,31 +21,63 @@ def now():
 # If already clear English, return unchanged.
 # Output only the rewritten query.
 # """.strip()
-
 TRANSLATOR_PROMPT = """
 Convert ERP/accounting Hinglish/Hindi/Gujarati queries to canonical English JSON.
-Return ONLY: {"canonical_query":"...","document_type":"...","language":"...","confidence":"high|medium|low"}
+Return ONLY a valid JSON object. Do not include markdown blocks, fences, or explanation text.
+Format: {"canonical_query":"...","document_type":"...","language":"...","confidence":"high|medium|low"}
+
+CRITICAL SYSTEM RULES:
+1. VERBATIM ENTITY PRESERVATION: Never drop, truncate, translate, or genericize proprietary brand names, company names, or proper nouns. Keep entities like "Nykaa", "Zomato", etc., completely untouched. Never substitute them with generic text like "store", "shop", or "vendor".
+2. TAXONOMY DOMAIN ALIGNMENT: Categorize the document_type strictly into one of the following active operational spaces:
+   - "customer" (for general lookups, profile cards, address requests, details, or opening balance records)
+   - "customer_ledger" (for statements, transactions, historical entries, ledgers, and cash flow diaries)
+   - "product" (for stock levels, inventories, material volumes, HSN codes, or SKU metrics)
+   - "gst_report" (for sales/purchase tax sheets, categories like b2b/b2c, returns, or summaries)
+   - "tds_report" / "tcs_report" (for outstanding balances or specific tax columns like 194C/206C)
+   - "unknown" (if completely non-ERP or fundamentally ambiguous)
 
 Hinglish→English hints:
+details/ka details = details / master records
 bill/invoice=invoice, sale/bikri=sales, purchase/kharidi=purchase
 customer/grahak/party=customer, vendor/supplier/vikreta=vendor
 amount/rakam/paisa=net amount, baki/pending/due=outstanding amount
 stock/qty=closing quantity, kam/zyada=less than/greater than
 dikhao/batao/batavo=show, aur/ane=and
 
-Rules:
-- Preserve IDs, HSN, dates, amounts, names exactly.
-- Keep all intents in multi-part queries.
-- document_type: sales_invoice / purchase_invoice / unknown_invoice / product / mixed.
-- bill/invoice alone (no sales/purchase) -> unknown_invoice.
-
 Examples:
+Q: muje nykaa banglore ka details chaia
+A: {"canonical_query": "Show customer details for Nykaa Bangalore", "document_type": "customer", "language": "hinglish", "confidence": "high"}
+
 Q: A/0326/C0077 sales bill ka customer name, amount aur status batao
-A: {"canonical_query": "Show customer name, net amount and status for sales invoice A/0326/C0077", "document_type": "sales_invoice", "language": "hinglish", "confidence": "high"}
+A: {"canonical_query": "Show customer name, net amount and status for sales invoice A/0326/C0077", "document_type": "customer_ledger", "language": "hinglish", "confidence": "high"}
 
 Q: HSN 48211090 ke saman me jiska bacha hua stock shunya se kam hai, uska naam aur matra batao
 A: {"canonical_query": "Show product name, HSN and closing quantity for products with HSN 48211090 where closing quantity is less than 0", "document_type": "product", "language": "hindi", "confidence": "high"}
 """
+# TRANSLATOR_PROMPT = """
+# Convert ERP/accounting Hinglish/Hindi/Gujarati queries to canonical English JSON.
+# Return ONLY: {"canonical_query":"...","document_type":"...","language":"...","confidence":"high|medium|low"}
+
+# Hinglish→English hints:
+# bill/invoice=invoice, sale/bikri=sales, purchase/kharidi=purchase
+# customer/grahak/party=customer, vendor/supplier/vikreta=vendor
+# amount/rakam/paisa=net amount, baki/pending/due=outstanding amount
+# stock/qty=closing quantity, kam/zyada=less than/greater than
+# dikhao/batao/batavo=show, aur/ane=and
+
+# Rules:
+# - Preserve IDs, HSN, dates, amounts, names exactly.
+# - Keep all intents in multi-part queries.
+# - document_type: sales_invoice / purchase_invoice / unknown_invoice / product / mixed.
+# - bill/invoice alone (no sales/purchase) -> unknown_invoice.
+
+# Examples:
+# Q: A/0326/C0077 sales bill ka customer name, amount aur status batao
+# A: {"canonical_query": "Show customer name, net amount and status for sales invoice A/0326/C0077", "document_type": "sales_invoice", "language": "hinglish", "confidence": "high"}
+
+# Q: HSN 48211090 ke saman me jiska bacha hua stock shunya se kam hai, uska naam aur matra batao
+# A: {"canonical_query": "Show product name, HSN and closing quantity for products with HSN 48211090 where closing quantity is less than 0", "document_type": "product", "language": "hindi", "confidence": "high"}
+# """
 def is_plain_english_query(query: str) -> bool:
     """
     Returns True when the query looks like normal English.
