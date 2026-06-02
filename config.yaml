@@ -1,5 +1,5 @@
 # ── Pipeline configuration ──────────────────────────────────────
-# All hardcoded word lists, thresholds, and constants extracted from source.
+# All hardcoded word lists, thresholds, and constants used in the pipeline are defined here.
 # Edit this file to add cities, language hints, or adjust routing.
 
 cities:
