@@ -206,6 +206,10 @@ def project_fields(records, fields=None):
     if not selected_fields:
         return records
 
+    # Treat "*" as "include all original fields" (wildcard).
+    if "*" in selected_fields:
+        return records
+
     projected_records = []
 
     for record in records:
