@@ -7,3 +7,6 @@ graph.txt
 models.txt
 nodes.txt
 prompt.txt*.pyc
+CHANGES.md
+ARCHITECTURE.md
+DIFF.md

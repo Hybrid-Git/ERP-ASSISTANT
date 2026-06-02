@@ -145,17 +145,29 @@ def match_filter(actual, expected):
 
         return True
 
+    if isinstance(expected, list):
+        return normalize_value(actual) in [normalize_value(v) for v in expected]
+
     act_str = normalize_value(actual)
     exp_str = normalize_value(expected)
 
-    # Allow matching if it is an exact match OR if the expected code/word is a substring of the actual value
+    # Numeric comparison when both are numbers (prevents "0" matching "-5" via substring).
+    try:
+        return float(act_str) == float(exp_str)
+    except (ValueError, TypeError):
+        pass
+
     return exp_str == act_str or (exp_str and exp_str in act_str)
-    # return normalize_value(actual) == normalize_value(expected)
 
 
 def apply_filters(records, filters=None):
     if not filters:
         return records
+
+    record_fields = set()
+    for record in records:
+        if isinstance(record, dict):
+            record_fields.update(record.keys())
 
     filtered_records = []
 
@@ -166,6 +178,16 @@ def apply_filters(records, filters=None):
         matched = True
 
         for field, expected in filters.items():
+            # Skip operator-style filter keys (e.g., "name.contains", "closingQty gt").
+            # These are LLM-generated filters meant for the API, not for local matching.
+            if "." in field or " " in field or any(op in field for op in ["$", ">", "<", "="]):
+                continue
+
+            # Skip filter keys that don't exist as fields in any record.
+            # These are API-level parameters (e.g. "order_by"), not local filters.
+            if record_fields and field not in record_fields:
+                continue
+
             actual = record.get(field)
 
             if not match_filter(actual, expected):
@@ -517,6 +539,16 @@ def get_customer_ledger(
     return json.dumps(final_result, ensure_ascii=False)
 
 
+def _safe_sort_key(record: dict, field: str):
+    val = record.get(field)
+    if val is None:
+        return float("-inf")
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return str(val)
+
+
 @tool
 def get_stock_levels(
     from_date: Optional[str] = "",
@@ -550,22 +582,26 @@ def get_stock_levels(
         filters: Optional exact filters.
     """
 
+    needs_local_sort = bool(sort_field) and sort_field != "name"
     body = {
         "companyId": COMPANY_ID,
         "from": from_date or "",
         "to": to_date or "",
         "lowStockOnly": low_stock_only,
-        "page": page,
-        "limit": limit,
+        "page": 1 if needs_local_sort else page,
+        "limit": 200 if needs_local_sort else limit,
         "term": term or "",
-        "sortField": sort_field or "name",
-        "sortOrder": sort_order or "asc",
     }
 
     if filters:
         body["filters"] = filters
 
     result = cached_api_post(STOCK_LEVELS_ENDPOINT, body=body)
+    if low_stock_only and fields is not None:
+        if isinstance(fields, list) and "isLowStock" not in fields:
+            fields = fields + ["isLowStock"]
+        elif isinstance(fields, dict):
+            fields["isLowStock"] = True
     result = project_result(result, fields=fields, filters=filters)
     if low_stock_only and result.get("success"):
         records = result.get("data", [])
@@ -577,6 +613,19 @@ def get_stock_levels(
 
         result["data"] = records
         result["count"] = len(records)
+
+    records = result.get("data", [])
+    if needs_local_sort and records:
+        reverse = (sort_order or "asc").lower() == "desc"
+        records = sorted(
+            records,
+            key=lambda r: _safe_sort_key(r, sort_field),
+            reverse=reverse,
+        )
+        records = records[:limit]
+        result["data"] = records
+        result["count"] = len(records)
+
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 

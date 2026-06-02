@@ -1,8 +1,7 @@
 from src.schema import MainState
-from src.retriever import retriever
 from src.tools_api import tools_dict, tools
-from src.tool_doc import TOOL_INTENT_REGISTRY, get_field_triggers, infer_requested_fields_from_registry, CITY_WORDS
-from src.config import llm, normalizer_llm
+from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES, get_field_triggers, infer_requested_fields_from_registry, CITY_WORDS
+from src.config import llm, normalizer_llm, get_cfg
 import time
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
@@ -10,41 +9,62 @@ import json
 import re
 from langsmith import traceable
 
+import numpy as np
+from sentence_transformers import CrossEncoder # type: ignore
+from src.config import embedding_model
+
+# ── Pipeline config from config.yaml ──
+NON_ENGLISH_HINTS = get_cfg("hinglish", "non_english_hints", default=[])
+MULTILINGUAL_WORDS = get_cfg("hinglish", "multilingual_words", default=[])
+ROUTE_KEYWORDS = get_cfg("route_keywords", default=[])
+CONNECTORS = get_cfg("connectors", default=[])
+STOP_TOKENS = set(get_cfg("stop_tokens", default=[]))
+SEGMENT_NEXT_KEYWORDS = get_cfg("segment_next_keywords", default=[])
+TH_EMBEDDING_RECALL_MIN = get_cfg("thresholds", "embedding_recall_min", default=0.3)
+TH_RERANKER_MIN = get_cfg("thresholds", "reranker_min", default=0.5)
+TH_RERANKER_TOP_K = get_cfg("thresholds", "reranker_top_k", default=5)
+CROSS_ENCODER_MODEL = get_cfg("cross_encoder_model", default="cross-encoder/ms-marco-MiniLM-L-6-v2")
+PARTY_WORDS = get_cfg("party_words", default=[])
+NAME_WORDS = get_cfg("name_words", default=[])
+LIST_WORDS = get_cfg("list_words", default=[])
+
+# ── Embedding recall + cross-encoder reranker for tool routing ──
+_tool_embeddings: dict[str, list[float]] = {}
+_cross_encoder: CrossEncoder
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+def _build_tool_embeddings():
+    for tool_name, meta in TOOL_INTENT_REGISTRY.items():
+        text = f"{meta['description']} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
+        _tool_embeddings[tool_name] = embedding_model.embed_query(text)
+
+_build_tool_embeddings()
+
+# Eager load cross-encoder at import time (not lazy — avoids cold-start latency on first query)
+_cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
 
 def now():
     return time.perf_counter()
 
-# TRANSLATOR_PROMPT = """
-# Rewrite the user query into clear English for an ERP/accounting system.
-# Keep all names, IDs, HSN codes, dates, amounts, sections and invoice/voucher numbers exactly.
-# Preserve every requested task. Do not answer, explain, add facts, remove details, or call tools.
-# If already clear English, return unchanged.
-# Output only the rewritten query.
-# """.strip()
-
 TRANSLATOR_PROMPT = """
-Convert ERP/accounting Hinglish/Hindi/Gujarati queries to canonical English JSON.
-Return ONLY: {"canonical_query":"...","document_type":"...","language":"...","confidence":"high|medium|low"}
+You are an ERP query normalizer. Convert Hinglish/Hindi/Gujarati queries to canonical English JSON.
 
-Hinglish→English hints:
-bill/invoice=invoice, sale/bikri=sales, purchase/kharidi=purchase
-customer/grahak/party=customer, vendor/supplier/vikreta=vendor
-amount/rakam/paisa=net amount, baki/pending/due=outstanding amount
-stock/qty=closing quantity, kam/zyada=less than/greater than
-dikhao/batao/batavo=show, aur/ane=and
+CRITICAL: NEVER translate standalone words. If user types "mars" output "mars", not March. Preserve words literally. Hinglish hints below are for ERP terms only (bill→invoice, sale→sales), NOT for converting ambiguous words.
 
-Rules:
-- Preserve IDs, HSN, dates, amounts, names exactly.
-- Keep all intents in multi-part queries.
-- document_type: sales_invoice / purchase_invoice / unknown_invoice / product / mixed.
-- bill/invoice alone (no sales/purchase) -> unknown_invoice.
+Schema: {"canonical_query":"...","document_type":"...","language":"...","confidence":"high|medium|low"}
+
+ERP hints: bill/invoice=invoice, sale/bikri=sales, purchase/kharidi=purchase, customer/grahak= customer, vendor/vikreta=vendor, amount/rakam=net amount, baki/due=outstanding amount, stock/qty=closing quantity, kam/zyada=less/greater, dikhao/batao=show, aur/ane=and
+
+Rules: Preserve IDs, HSN, dates, names exactly. Keep all intents in multi-part queries. If query is already clean English, return as-is with language "english". document_type: sales_invoice / purchase_invoice / unknown_invoice / product / mixed. bill/invoice alone→unknown_invoice.
 
 Examples:
 Q: A/0326/C0077 sales bill ka customer name, amount aur status batao
 A: {"canonical_query": "Show customer name, net amount and status for sales invoice A/0326/C0077", "document_type": "sales_invoice", "language": "hinglish", "confidence": "high"}
 
-Q: HSN 48211090 ke saman me jiska bacha hua stock shunya se kam hai, uska naam aur matra batao
-A: {"canonical_query": "Show product name, HSN and closing quantity for products with HSN 48211090 where closing quantity is less than 0", "document_type": "product", "language": "hindi", "confidence": "high"}
+Q: muje mars ke customer ka detail chaia
+A: {"canonical_query": "Show customer details for mars", "document_type": "customer", "language": "hinglish", "confidence": "medium"}
 """
 def is_plain_english_query(query: str) -> bool:
     """
@@ -70,63 +90,14 @@ def is_plain_english_query(query: str) -> bool:
         if 0x0A80 <= code <= 0x0AFF:
             return False
 
-    non_english_hints = [
-        "batao",
-        "batavo",
-        "dikhao",
-        "dakhva",
-        "joiye",
-        "batana",
-        "ka",
-        "ke",
-        "ki",
-        "no",
-        "nu",
-        "na",
-        "ane",
-        "aur",
-        "ani",
-        "wala",
-        "wale",
-        "jisme",
-        "jema",
-        "madhle",
-        "kam",
-        "ochhi",
-        "ochhu",
-        "ochha",
-        "zyada",
-        "vadhu",
-        "jast",
-        "adhik",
-        "baki",
-        "thakbaki",
-        "khata",
-        "hisab",
-        "jaththo",
-        "satha",
-    ]
-
     words = set(q.replace(",", " ").replace("?", " ").split())
 
-    return not any(word in words for word in non_english_hints)
+    return not any(word in words for word in NON_ENGLISH_HINTS)
 
 def needs_translation(query: str) -> bool:
     q = query.lower()
-
-    multilingual_words = {
-        "ka", "ke", "ki", "ko", "se", "me", "mein",
-        "aur", "ane", "ani",
-        "batao", "batavo", "dikhao", "dakhvo", "dakhva",
-        "kitna", "kitni", "kya",
-        "rakam", "paisa", "baki",
-        "kam", "zyada", "vadhu", "ochhi", "ochhu",
-        "grahak", "maal", "chhe", "che",
-        "wala", "wale", "jiska", "jinki", "jisme"
-    }
-
     words = set(re.sub(r"[^\w/.-]+", " ", q).split())
-    return bool(words & multilingual_words)
+    return bool(words & set(MULTILINGUAL_WORDS))
 
 
 def is_routeable_without_translator(query: str) -> bool:
@@ -138,35 +109,7 @@ def is_routeable_without_translator(query: str) -> bool:
     """
     q = re.sub(r"\s+", " ", (query or "").lower()).strip()
 
-    route_keywords = [
-        # customer domain
-        "customer", "customer id", "party", "client", "buyer", "grahak",
-        "opening balance", "opening type",
-
-        # ledger domain
-        "ledger", "account statement", "statement", "transactions",
-        "closing balance", "current balance", "khata", "hisab",
-
-        # stock/product domain
-        "stock", "inventory", "product", "products", "item", "items",
-        "hsn", "hsn code", "sku", "closing quantity", "closing qty",
-        "low stock", "out of stock", "maal", "jaththo", "satha",
-
-
-        #GST
-        "gst",
-"gst summary",
-"gst report",
-"b2b",
-"b2c",
-"igst",
-"cgst",
-"sgst",
-"tds",
-"tcs",
-    ]
-
-    return any(keyword in q for keyword in route_keywords)
+    return any(keyword in q for keyword in ROUTE_KEYWORDS)
 
 
 def extract_json_object(text: str) -> dict:
@@ -191,11 +134,10 @@ async def translator_node(state: MainState) -> MainState:
 
     Fast path:
     - Plain English queries skip translator.
-    - ERP queries that are already routeable by keyword/domain skip translator,
-      even if they contain Hinglish words like batao/aur/ka.
+    - ERP queries routeable by keyword/domain (and no Hinglish words) skip translator.
 
     Slow path:
-    - Ambiguous multilingual queries use normalizer_llm.
+    - Any query with Hinglish/Hindi/Gujarati words gets normalized by normalizer_llm.
     """
     try:
         print("Translator node triggered")
@@ -225,6 +167,35 @@ async def translator_node(state: MainState) -> MainState:
                 "document_type": "routeable",
             }
 
+        if needs_translation(user_query):
+            print("Translator: query needs Hinglish/Hindi/Gujarati normalization")
+            response = await normalizer_llm.ainvoke([
+                SystemMessage(content=TRANSLATOR_PROMPT),
+                HumanMessage(content=user_query),
+            ])
+            log_token_usage(response, "translator")
+
+            data = extract_json_object(response.content)
+
+            canonical_query = data.get("canonical_query") or user_query
+            language = data.get("language", "mixed")
+            confidence = data.get("confidence", "medium")
+
+            print("Original query:", user_query)
+            print("Canonical query:", canonical_query)
+            print("Detected language:", language)
+            print("Translator confidence:", confidence)
+
+            return {
+                "original_query": user_query,
+                "canonical_query": canonical_query,
+                "user_query": canonical_query,
+                "translator_used": True,
+                "translator_confidence": confidence,
+                "detected_language": language,
+                "document_type": data.get("document_type", "unknown"),
+            }
+
         if is_routeable_without_translator(user_query):
             print("Translator skipped: query is directly routeable by ERP keywords")
             return {
@@ -237,45 +208,16 @@ async def translator_node(state: MainState) -> MainState:
                 "document_type": "routeable",
             }
 
-        if not needs_translation(user_query):
-            print("Translator skipped: no multilingual normalization needed")
-            return {
-                "original_query": user_query,
-                "canonical_query": user_query,
-                "user_query": user_query,
-                "translator_used": False,
-                "translator_confidence": "skipped_no_normalization_needed",
-                "detected_language": "english_or_mixed",
-                "document_type": "unknown",
-            }
-
-        response = await normalizer_llm.ainvoke([
-            SystemMessage(content=TRANSLATOR_PROMPT),
-            HumanMessage(content=user_query),
-        ])
-        log_token_usage(response, "translator")
-
-        data = extract_json_object(response.content)
-
-        canonical_query = data.get("canonical_query") or user_query
-        language = data.get("language", "mixed")
-        confidence = data.get("confidence", "medium")
-
-        print("Original query:", user_query)
-        print("Canonical query:", canonical_query)
-        print("Detected language:", language)
-        print("Translator confidence:", confidence)
-
+        print("Translator skipped: no multilingual normalization needed")
         return {
             "original_query": user_query,
-            "canonical_query": canonical_query,
-            "user_query": canonical_query,
-            "translator_used": True,
-            "translator_confidence": confidence,
-            "detected_language": language,
-            "document_type": data.get("document_type", "unknown"),
+            "canonical_query": user_query,
+            "user_query": user_query,
+            "translator_used": False,
+            "translator_confidence": "skipped_no_normalization_needed",
+            "detected_language": "english_or_mixed",
+            "document_type": "unknown",
         }
-
     except Exception as e:
         print(f"Translator failed: {e}")
         user_query = state.get("user_query", "") or ""
@@ -289,58 +231,42 @@ async def translator_node(state: MainState) -> MainState:
             "document_type": "unknown",
         }
 
-def keyword_tool_override(query: str) -> list[str]:
-    q = query.lower()
-    selected_tools = []
+def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
+    """Embedding recall + cross-encoder reranker for tool selection."""
+    if not _tool_embeddings:
+        return []
 
-    sales_keywords = [
-        "sales invoice",
-        "sale invoice",
-        "sales bill",
-        "sale bill",
-        "customer invoice",
-        "customer bill",
-        "sales",
-        "sale",
-        "bikri",
-        "bikri invoice",
-        "bikri bill",
-    ]
+    try:
+        query_emb = embedding_model.embed_query(query_part)
+    except Exception:
+        return []
 
-    purchase_keywords = [
-        "purchase invoice",
-        "purchase bill",
-        "vendor bill",
-        "supplier bill",
-        "purchase",
-        "khareedi",
-        "kharidi",
-        "khareedi invoice",
-        "kharidi invoice",
-    ]
+    scores = []
+    for tool_name, tool_emb in _tool_embeddings.items():
+        sim = _cosine_sim(query_emb, tool_emb)
+        scores.append((tool_name, sim))
 
-    product_keywords = [
-        "product",
-        "products",
-        "inventory",
-        "stock",
-        "hsn",
-        "sku",
-        "item",
-        "items",
-        "gst rate",
-    ]
+    scores.sort(key=lambda x: x[1], reverse=True)
 
-    if any(word in q for word in sales_keywords):
-        selected_tools.append("get_sales_list")
+    if not scores or scores[0][1] < TH_EMBEDDING_RECALL_MIN:
+        return []
 
-    if any(word in q for word in purchase_keywords):
-        selected_tools.append("get_purchase_list")
+    top_k = scores[:TH_RERANKER_TOP_K]
+    pairs = []
+    for tool_name, _ in top_k:
+        meta = registry.get(tool_name, {})
+        desc = f"{tool_name}: {meta.get('description', '')}. Aliases: {', '.join(meta.get('aliases', []))}"
+        pairs.append((query_part, desc))
 
-    if any(word in q for word in product_keywords):
-        selected_tools.append("get_product_list")
+    rerank_scores = _cross_encoder.predict(pairs)
+    reranked = [(top_k[i][0], float(rerank_scores[i])) for i in range(len(top_k))]
+    reranked.sort(key=lambda x: x[1], reverse=True)
 
-    return selected_tools
+    result = []
+    for tool_name, score in reranked:
+        if score > TH_RERANKER_MIN:
+            result.append(tool_name)
+    return result
 
 def add_unique(items: list[str], value: str):
     """Append a tool name only once while preserving order."""
@@ -353,24 +279,6 @@ def normalize_text(text: str) -> str:
 
 
 
-def is_unsupported_current_scope(query: str) -> bool:
-    """
-    Current prototype supports only 6 tools:
-    customer, customer ledger, stock levels, GST summary, TDS outstanding, TCS outstanding.
-    Invoice/voucher tools are not enabled, so fail fast instead of guessing customer/stock.
-    """
-    q = normalize_text(query)
-
-    unsupported_hints = [
-        "sales invoice", "sale invoice", "sales bill", "sale bill",
-        "purchase invoice", "purchase bill", "vendor bill", "supplier bill",
-        "receipt voucher", "payment voucher",
-        "invoice no", "invoice number", "voucher no", "voucher number",
-    ]
-
-    return any(hint in q for hint in unsupported_hints)
-
-
 def split_query_parts(query: str) -> list[str]:
     """
     Splits one query into intent parts.
@@ -381,15 +289,9 @@ def split_query_parts(query: str) -> list[str]:
     if not query:
         return []
 
-    split_pattern = (
-        r"\s+aur\s+|"
-        r"\s+ane\s+|"
-        r"\s+ani\s+|"
-        r"\s+also\s+|"
-        r"\s+and\s+|"
-        r"\s+plus\s+|"
-        r";\s*"
-    )
+    split_pattern = "|".join(
+        rf"\s+{re.escape(c)}\s+" for c in CONNECTORS
+    ) + "|;\\s*"
 
     return [
         part.strip()
@@ -416,64 +318,23 @@ def split_query_for_tools(original_query: str, canonical_query: str = "") -> lis
     return parts or [original_query or canonical_query]
 
 
-def score_tool_from_metadata(query_part: str, tool_meta: dict) -> int:
-    q = normalize_text(query_part)
-    score = 0
-
-    for alias in tool_meta.get("aliases", []):
-        alias_l = str(alias).lower()
-        if alias_l and alias_l in q:
-            score += 5
-
-    for keyword in tool_meta.get("keywords", []):
-        keyword_l = str(keyword).lower()
-        if keyword_l and keyword_l in q:
-            score += 4
-
-    for field in tool_meta.get("fields", []):
-        field_l = str(field).lower()
-        if field_l and field_l in q:
-            score += 2
-
-    # Supports both shapes:
-    #   {"field": ["alias1", "alias2"]}
-    #   {"alias phrase": "field"}
-    for key, value in tool_meta.get("field_aliases", {}).items():
-        candidates = [key]
-        if isinstance(value, list):
-            candidates.extend(value)
-        elif isinstance(value, str):
-            candidates.append(value)
-
-        for alias in candidates:
-            alias_l = str(alias).lower()
-            if len(alias_l) > 1 and alias_l in q:
-                score += 2
-
-    description = normalize_text(tool_meta.get("description", ""))
-    for word in q.split():
-        if len(word) > 3 and word in description:
-            score += 1
-
-    return score
-
-
-def select_tools_from_metadata_for_part(
-    query_part: str,
-    registry: dict,
-    min_score: int = 2,
-) -> list[str]:
-    scored = []
-
-    for tool_name, meta in registry.items():
-        score = score_tool_from_metadata(query_part, meta)
-
-        if score >= min_score:
-            scored.append((tool_name, score))
-
-    scored.sort(key=lambda item: item[1], reverse=True)
-
-    return [tool_name for tool_name, score in scored]
+def _keyword_fallback(part: str) -> list[str]:
+    """Fallback: match registry keywords/aliases against the query part.
+    Uses word-boundary matching to prevent false positives
+    (e.g. "credit" inside "creditNotesUnregistered")."""
+    q = normalize_text(part)
+    matched = []
+    for tool_name, meta in TOOL_INTENT_REGISTRY.items():
+        for kw in meta.get("keywords", []):
+            if re.search(rf"(?<!\w){re.escape(kw.lower())}(?!\w)", q):
+                add_unique(matched, tool_name)
+                break
+        if tool_name not in matched:
+            for alias in meta.get("aliases", []):
+                if re.search(rf"(?<!\w){re.escape(alias.lower())}(?!\w)", q):
+                    add_unique(matched, tool_name)
+                    break
+    return matched
 
 
 def merge_unique_tools(tool_lists: list[list[str]]) -> list[str]:
@@ -486,122 +347,10 @@ def merge_unique_tools(tool_lists: list[list[str]]) -> list[str]:
     return merged
 
 
-def get_tools_by_category(registry: dict, category: str) -> list[str]:
-    matched_tools = []
-
-    for tool_name, meta in registry.items():
-        if meta.get("category") == category:
-            matched_tools.append(tool_name)
-
-    return matched_tools
-
-
-def keyword_tools_for_part(part: str) -> list[str]:
-    """
-    Tool-domain keyword override.
-
-    This is intentionally NOT column-specific hardcoding. It only decides
-    which high-level tool/domain is needed. Field selection remains dynamic
-    in the worker prompt/tool args.
-    """
-    q = normalize_text(part)
-    selected: list[str] = []
-
-    customer_hints = [
-        "customer", "customer id", "party", "client", "buyer", "grahak",
-        "ledger name", "opening balance", "opening type",
-    ]
-
-    ledger_hints = [
-        "ledger", "account statement", "statement", "transactions",
-        "closing balance", "current balance", "khata", "hisab",
-    ]
-
-    stock_hints = [
-        "stock", "inventory", "product", "products", "item", "items",
-        "hsn", "hsn code", "sku", "closing quantity", "closing qty",
-        "low stock", "out of stock", "maal", "jaththo", "satha",
-    ]
-    gst_hints = [
-        "gst",
-        "gst summary",
-        "gst report",
-        "gstr",
-        "b2b",
-        "b2c",
-        "exports",
-        "nil rated",
-        "exempted",
-        "igst",
-        "cgst",
-        "sgst",
-        "cess",
-        "taxable amount",
-        "invoice amount",
-        "voucher count",
-    ]
-
-    tds_hints = [
-        "tds",
-        "tds outstanding",
-        "tds payable",
-        "tds pending",
-        "tds report",
-        "194c",
-        "194j",
-        "194i",
-    ]
-
-    tcs_hints = [
-        "tcs",
-        "tcs outstanding",
-        "tcs payable",
-        "tcs pending",
-        "tcs report",
-        "206c",
-    ]
-
-    if any(word in q for word in gst_hints):
-        add_unique(selected, "get_gst_summary")
-
-    if any(word in q for word in tds_hints):
-        add_unique(selected, "get_tds_outstanding")
-
-    if any(word in q for word in tcs_hints):
-        add_unique(selected, "get_tcs_outstanding")
-
-    has_customer = any(word in q for word in customer_hints)
-    has_ledger = any(word in q for word in ledger_hints)
-    has_stock = any(word in q for word in stock_hints)
-
-    if has_customer and not has_ledger:
-        add_unique(selected, "get_customer")
-
-    if has_ledger:
-        direct_customer_id = bool(
-            re.search(r"\bcustomer\s*id\s*[:#-]?\s*\d+\b", q)
-            or re.search(r"\bcustomer_id\s*[:#-]?\s*\d+\b", q)
-        )
-
-        if not direct_customer_id:
-            add_unique(selected, "get_customer")
-
-        add_unique(selected, "get_customer_ledger")
-
-    if has_stock:
-        add_unique(selected, "get_stock_levels")
-
-    return selected
-    
-
 def is_multi_intent_query(original_query: str, canonical_query: str, query_parts: list[str]) -> bool:
     combined = f"{original_query or ''} {canonical_query or ''}".lower()
 
-    connectors = [
-        " aur ", " ane ", " ani ", " also ", " and ", ";",
-    ]
-
-    if any(connector in combined for connector in connectors):
+    if any(c in combined for c in CONNECTORS):
         return True
 
     return len(query_parts) > 1
@@ -643,41 +392,21 @@ async def semantic_search(state: MainState) -> MainState:
         print(f"Query parts for metadata matching: {query_parts}")
 
         selected_tool_groups: list[list[str]] = []
-        unsupported_parts: list[str] = []
-        used_keyword_routing = False
 
-        # -------------------------------------------------
-        # 1. Check each part: skip unsupported invoice/voucher parts,
-        #    process supported parts through keyword/metadata routing.
-        # -------------------------------------------------
         for part in query_parts:
-            if is_unsupported_current_scope(part):
-                print(f"Part '{part}' is unsupported (needs invoice/voucher tool). Skipping.")
-                unsupported_parts.append(part)
-                continue
-
-            keyword_selected = keyword_tools_for_part(part)
-
-            if keyword_selected:
-                print(f"Keyword tools for part '{part}': {keyword_selected}")
-                selected_tool_groups.append(keyword_selected)
-                used_keyword_routing = True
-                continue
-
-            tools_for_part = select_tools_from_metadata_for_part(
-                part,
-                TOOL_INTENT_REGISTRY,
-                min_score=3,
-            )
+            tools_for_part = score_tools_via_reranker(part, TOOL_INTENT_REGISTRY)
 
             if tools_for_part:
-                print(f"Metadata tools for part '{part}': {tools_for_part}")
+                print(f"Reranker tools for part '{part}': {tools_for_part}")
                 selected_tool_groups.append(tools_for_part)
+                continue
 
-        # -------------------------------------------------
-        # 2. Optional document_type hint from translator.
-        # This is additive only and does not override keyword tools.
-        # -------------------------------------------------
+            keyword_tools = _keyword_fallback(part)
+            if keyword_tools:
+                print(f"Keyword fallback tools for part '{part}': {keyword_tools}")
+                selected_tool_groups.append(keyword_tools)
+
+        # Optional document_type hint from translator (additive only).
         if document_type in {"product", "inventory", "stock"}:
             selected_tool_groups.append(["get_stock_levels"])
         elif document_type in {"customer", "party"}:
@@ -695,27 +424,12 @@ async def semantic_search(state: MainState) -> MainState:
         if selected_tools:
             print(f"Final selected tools: {selected_tools}")
 
-            result = {
+            return {
                 "retrieved_tools": selected_tools,
                 "selected_tools": selected_tools,
                 "query_parts": query_parts,
-                # Router LLM has been removed. Keep this key for compatibility.
                 "skip_router": True,
             }
-
-            if unsupported_parts:
-                result["unsupported_parts"] = unsupported_parts
-                print(f"Unsupported parts (skipped): {unsupported_parts}")
-
-            return result
-
-        # -------------------------------------------------
-        # 3. No tools selected. Report unsupported.
-        # -------------------------------------------------
-        reason = "No supported ERP tool matched this query."
-
-        if unsupported_parts:
-            reason = "This query needs invoice/voucher tools, which are not enabled in the current 6-tool scope."
 
         print("No confident tool match. Marking query unsupported.")
 
@@ -725,8 +439,7 @@ async def semantic_search(state: MainState) -> MainState:
             "query_parts": query_parts,
             "skip_router": True,
             "unsupported": True,
-            "unsupported_parts": unsupported_parts,
-            "unsupported_reason": reason,
+            "unsupported_reason": "No supported ERP tool matched this query.",
         }
 
     except Exception as e:
@@ -774,89 +487,33 @@ def build_system_prompt(
     query_parts: list[str] | None = None
 ) -> str:
     lines = [
-        "You are an ERP tool-caller. Output a JSON array of tool call objects.",
-        'Format: [{"name": "<tool>", "arguments": {<params>}}]',
-        "CRITICAL: Use tool names EXACTLY as listed under 'Available tools:' below. Never shorten, rename, or alias them.",
-        "Never invent IDs, dates, amounts, names, or records. Extract values exactly from the query.",
-        "For multi-intent queries, include ALL required tools in the array. Do not skip any.",
-        "Dates must be YYYY-MM-DD. Customer IDs must be integers. Default limit=10.",
-        "",
-        "⚠️ AMBIGUITY RULE: If the query requests master data, stock levels, or ledger parameters for an entity but fails to provide any specific identifying details (such as a company name, customer ID, or HSN code), and there is no active context summary provided above to resolve it, do NOT attempt to guess or execute tools with empty arguments.",
-        "Instead, return a single JSON object indicating that clarification is required:",
-        '{"status": "needs_clarification", "summary": "Please tell me which customer or product you mean by providing a specific name, ID, or HSN code."}',
-        "",
-        "Output ONLY the JSON array of tool calls OR the single clarification JSON object. Do not include any other markdown fences, conversational text, or wrapper formats.",
-        "",
-        "Available tools:",
-        "",
+        "You are an ERP assistant. Use the available tools to answer the user.",
+        'Preserve all query text literally. Do not reinterpret or assume intent. If user says "mars" use "mars", not March.',
+        "Never invent IDs, names, dates, or amounts.",
+        "You MUST call at least one tool. Never answer in prose without a tool call.",
+        "Do NOT output any thinking or reasoning — call the tool directly.",
+        "Set `fields` to only the columns the user explicitly asks for. "
+        'E.g. "sirf name" → fields=["name"]; "name and cgst" → fields=["name","cgst"]. '
+        "Omit `fields` if user doesn't specify any columns.",
     ]
 
-    for tool_name in selected_tools:
-        meta = TOOL_INTENT_REGISTRY.get(tool_name)
-        if meta:
-            lines.append(f"  {_build_tool_desc(tool_name, meta)}")
+    if selected_tools:
+        lines.append("")
+        lines.append(f"You MUST call ALL {len(selected_tools)} tools: {', '.join(selected_tools)}")
+        lines.append("Do NOT skip any. Each tool addresses a different part of the user's request.")
+        lines.append("")
+        lines.append("Tool rules:")
+        for tool_name in selected_tools:
+            meta = TOOL_INTENT_REGISTRY.get(tool_name)
+            if meta and meta.get("prompt_tips"):
+                lines.append(f"  {tool_name}: {meta['prompt_tips']}")
 
     lines.append("")
-    lines.append("Field rules (keyword=>tool(fields=[...])):")
-
-    for tool_name in selected_tools:
-        meta = TOOL_INTENT_REGISTRY.get(tool_name)
-        if meta:
-            examples = _build_field_examples(tool_name, meta)
-            for ex in examples[:3]:
-                lines.append(f"  {ex}")
-
-    lines.append("")
-    lines.append("Tool-specific rules:")
-    for tool_name in selected_tools:
-        meta = TOOL_INTENT_REGISTRY.get(tool_name)
-        if meta and meta.get("prompt_tips"):
-            lines.append(f"  {tool_name}: {meta['prompt_tips']}")
+    lines.append("Example:")
+    lines.append("  user: show me b2b invoices for april 2024")
+    lines.append("  assistant: (tool call with from_date=2024-04-01, to_date=2024-04-30, categories=[b2b])")
 
     return "\n".join(lines)
-
-    
-# def build_system_prompt(
-#     user_query: str,
-#     selected_tools: list[str],
-#     query_parts: list[str] | None = None
-# ) -> str:
-#     lines = [
-#         "You are an ERP tool-caller. Output a JSON array of tool call objects.",
-#         'Format: [{"name": "<tool>", "arguments": {<params>}}]',
-#         "CRITICAL: Use tool names EXACTLY as listed under 'Available tools:' below. Never shorten, rename, or alias them.",
-#         "Example: output {\"name\": \"get_tds_outstanding\"}, NOT \"tds_report\"; output {\"name\": \"get_customer_ledger\"}, NOT \"ledger\".",
-#         "Never invent IDs, dates, amounts, names, or records. Extract values exactly from the query.",
-#         "For multi-intent queries, include ALL required tools in the array. Do not skip any.",
-#         "Dates must be YYYY-MM-DD. Customer IDs must be integers. Default limit=10.",
-#         "Output ONLY the JSON array. No text, no markdown, no explanation.",
-#         "",
-#         "Available tools:",
-#     ]
-
-#     for tool_name in selected_tools:
-#         meta = TOOL_INTENT_REGISTRY.get(tool_name)
-#         if meta:
-#             lines.append(f"  {_build_tool_desc(tool_name, meta)}")
-
-#     lines.append("")
-#     lines.append("Field rules (keyword=>tool(fields=[...])):")
-
-#     for tool_name in selected_tools:
-#         meta = TOOL_INTENT_REGISTRY.get(tool_name)
-#         if meta:
-#             examples = _build_field_examples(tool_name, meta)
-#             for ex in examples[:3]:
-#                 lines.append(f"  {ex}")
-
-#     lines.append("")
-#     lines.append("Tool-specific rules:")
-#     for tool_name in selected_tools:
-#         meta = TOOL_INTENT_REGISTRY.get(tool_name)
-#         if meta and meta.get("prompt_tips"):
-#             lines.append(f"  {tool_name}: {meta['prompt_tips']}")
-
-#     return "\n".join(lines)
 
 
 def sec(start):
@@ -951,115 +608,10 @@ def parse_planner_json_blocks(text: str) -> list:
 def normalize_tool_name(name: str) -> str:
     if not name:
         return ""
-
     name = str(name).strip()
-
-    # Fix malformed names like "get_customer=brand:search:Nykaa&filters=..."
     if "=" in name:
         name = name.split("=", 1)[0].strip()
-
-    aliases = {
-        "stock_levels": "get_stock_levels",
-        "stock_report": "get_stock_levels",
-        "customer": "get_customer",
-        "customer_report": "get_customer",
-        "customer_ledger": "get_customer_ledger",
-        "gst_report": "get_gst_summary",
-        "tds_report": "get_tds_outstanding",
-        "tcs_report": "get_tcs_outstanding",
-    }
-
-    return aliases.get(name, name)
-
-
-def _extract_args_from_suffix(suffix: str) -> dict:
-    """
-    Extract args from a malformed tool-name suffix like:
-    'brand:search:Nykaa&filters:{"name":{"contains":"KOLKATA"}}'
-    Returns a dict of extracted args (generic, not tool-specific).
-    """
-    args = {}
-
-    if not suffix:
-        return args
-
-    # 1. Extract JSON content with its key prefix (handles filters:{...} etc.)
-    json_match = re.search(r"(\w+)[=:](\{.*\})", suffix, re.DOTALL)
-    if json_match:
-        key_name, json_str = json_match.group(1), json_match.group(2)
-        try:
-            parsed = json.loads(json_str)
-            if key_name in ("filters", "filter"):
-                args["filters"] = parsed
-            else:
-                args.update(parsed)
-        except Exception:
-            pass
-
-    # 2. Extract known simple params (search:Nykaa, term:48211090, limit:10, etc.)
-    known_params = {
-        "search", "term", "limit", "page", "customer_id",
-        "from_date", "to_date", "sort_field", "sort_order",
-        "low_stock_only",
-    }
-    for key in known_params:
-        if key in args:
-            continue
-        m = re.search(r'\b' + re.escape(key) + r'[=:](\S+?)(?:\b|&|$|\s)', suffix)
-        if m:
-            args[key] = m.group(1).rstrip(", ")
-
-    return args
-
-
-def normalize_planner_blocks(blocks: list) -> list[dict]:
-    calls = []
-
-    for block in blocks:
-        if isinstance(block, list):
-            raw_calls = block
-        elif isinstance(block, dict):
-            if block.get("unsupported") is True:
-                continue
-            raw_calls = (
-                block.get("tool_calls")
-                or block.get("tools")
-                or block.get("calls")
-                or [block]
-            )
-        else:
-            continue
-
-        for call in raw_calls:
-            if not isinstance(call, dict):
-                continue
-
-            raw_name = call.get("name") or call.get("tool") or ""
-            raw_args = call.get("args") or call.get("arguments") or {}
-
-            if not isinstance(raw_args, dict):
-                raw_args = {}
-
-            # Handle malformed names with embedded args: "get_customer=...suffix..."
-            if "=" in str(raw_name):
-                name_part, _, suffix = str(raw_name).partition("=")
-                embedded = _extract_args_from_suffix(suffix)
-                # Embedded args take priority over empty raw_args
-                if embedded and not raw_args:
-                    raw_args = embedded
-                elif embedded:
-                    raw_args = {**embedded, **raw_args}
-                raw_name = name_part
-
-            name = normalize_tool_name(raw_name)
-
-            if name:
-                calls.append({
-                    "name": name,
-                    "args": raw_args,
-                })
-
-    return calls
+    return TOOL_NAME_ALIASES.get(name, name)
 
 
 def extract_date_ranges_with_positions(query: str) -> list[dict]:
@@ -1092,13 +644,6 @@ def nearest_date_range_to_keyword(query: str, keywords: list[str]) -> tuple[str,
     return selected["from"], selected["to"]
 
 
-SEGMENT_NEXT_KEYWORDS = [
-    "nykaa", "customer id", "hsn", "gst", "b2b", "grand total",
-    "tds", "tcs", "sales invoice", "purchase invoice",
-    "ledger", "customer", "stock", "product",
-]
-
-
 def get_segment_for_tool(query: str, date_keywords: list[str]) -> str:
     """Return the substring of query most relevant to a tool, bounded by
     the next major tool keyword after this tool's first keyword match."""
@@ -1125,9 +670,6 @@ def extract_date_range_for_tool(query: str, date_keywords: list[str]) -> tuple[s
     if ranges:
         return ranges[0]["from"], ranges[0]["to"]
     return nearest_date_range_to_keyword(query, date_keywords)
-
-
-STOP_TOKENS = {"KA", "CUSTOMER", "ID", "AUR", "NAAM", "BATAO", "BHI", "VALA", "DIKHAO", "KI", "KO", "KE", "KAA", "KA", "PAN"}
 
 
 def expand_customer_city_calls(base_name: str, base_args: dict, user_query: str) -> list[dict]:
@@ -1257,7 +799,7 @@ async def chat_model_node(state: MainState):
             }
 
         step = now()
-        print("[3] Using raw LLM (no bind_tools)")
+        print("[3] Using bind_tools")
 
         prompt_start = time.perf_counter()
 
@@ -1272,12 +814,6 @@ async def chat_model_node(state: MainState):
         print(f"[4] Built system prompt: {prompt_duration:.3f}s")
         print("system_prompt_chars:", len(system_prompt_text))
 
-        # ───────────────────────────────────────────────────────────
-        # SIMPLE SESSION MEMORY
-        # No summarization.
-        # No trimming.
-        # All previous non-system messages are passed as context.
-        # ───────────────────────────────────────────────────────────
         chat_history = [
             msg for msg in state.get("messages", [])
             if not isinstance(msg, SystemMessage)
@@ -1295,35 +831,63 @@ async def chat_model_node(state: MainState):
         print("message_count:", len(llm_input))
         print("message_types:", [type(m).__name__ for m in llm_input])
 
-        step = now()
-        print("[6] Invoking LLM...")
-        response = await llm.ainvoke(llm_input)
-        print(f"[6] LLM invoke completed: {sec(step)}s")
-        log_token_usage(response, "chat_model")
+        all_raw_calls = []
+        called_names = set()
+        remaining_names = list(selected_tools)
+        loop_input = llm_input
+        retry_count = 0
 
-        print("\n========== RAW WORKER RESPONSE DEBUG ==========")
-        print("response_type:", type(response).__name__)
-        print("content:", repr(getattr(response, "content", "")))
-        print("additional_kwargs:", getattr(response, "additional_kwargs", {}))
-        print("response_metadata:", getattr(response, "response_metadata", {}))
-        print("==============================================\n")
+        while remaining_names and retry_count < 3:
+            retry_count += 1
+            remaining_tools = [
+                t for t in available_tools if t.name in remaining_names
+            ]
+            if not remaining_tools:
+                break
 
-        print_ollama_metadata(response)
+            step = now()
+            print(f"[6] Invoking LLM with bind_tools (round {retry_count}, tools: {[t.name for t in remaining_tools]})...")
+            response = await llm.bind_tools(remaining_tools).ainvoke(loop_input)
+            print(f"[6] LLM invoke completed: {sec(step)}s")
+            log_token_usage(response, "chat_model")
 
-        content = getattr(response, "content", "")
+            print("\n========== RAW WORKER RESPONSE DEBUG ==========")
+            print("response_type:", type(response).__name__)
+            print("content:", repr(getattr(response, "content", "")))
+            print("tool_calls:", getattr(response, "tool_calls", None))
+            print("additional_kwargs:", getattr(response, "additional_kwargs", {}))
+            print("response_metadata:", getattr(response, "response_metadata", {}))
+            print("==============================================\n")
+
+            print_ollama_metadata(response)
+
+            raw_tool_calls = getattr(response, "tool_calls", None) or []
+            for call in raw_tool_calls:
+                name = call.get("name", "")
+                if name and name not in called_names:
+                    called_names.add(name)
+                    all_raw_calls.append(call)
+
+            remaining_names = [
+                n for n in selected_tools if n not in called_names
+            ]
+
+            if not remaining_names:
+                break
+
+            print(f"[RETRY] Missing tool calls for: {remaining_names}")
+            loop_input = (
+                [llm_input[0]]  # system prompt
+                + llm_input[1:-1]  # chat history (exclude prev human/ai messages from this node)
+                + [HumanMessage(content=user_query)]
+                + [response]
+                + [HumanMessage(content=f"You still need to call the following tool(s): {', '.join(remaining_names)}. Call them now.")]
+            )
+
+        raw_tool_calls = all_raw_calls
         tool_calls = []
 
         # ---------- deterministic repair helpers ----------
-        TOOL_NAME_ALIASES = {
-            "tds_report": "get_tds_outstanding",
-            "tcs_report": "get_tcs_outstanding",
-            "gst_report": "get_gst_summary",
-            "customer_ledger": "get_customer_ledger",
-            "stock_levels": "get_stock_levels",
-            "stock_report": "get_stock_levels",
-            "customer_report": "get_customer",
-        }
-
         def _apply_repair(name, args, user_query):
             meta = TOOL_INTENT_REGISTRY.get(name, {})
             repair = meta.get("repair")
@@ -1336,6 +900,24 @@ async def chat_model_node(state: MainState):
 
             combined_q = f"{original_query or ''} {state.get('canonical_query', '') or ''}".lower()
 
+            if args:
+                flds = args.get("fields")
+                if isinstance(flds, dict):
+                    from src.tools_api import normalize_fields
+                    args["fields"] = normalize_fields(flds)
+                elif isinstance(flds, str):
+                    args["fields"] = [f.strip() for f in flds.split(",") if f.strip()]
+
+                # If LLM sent no fields, build from query triggers only (no force-added extras)
+                if "fields" not in args or not args.get("fields"):
+                    args["fields"] = list(repair.get("default_fields", ["name"]))
+
+                # Clear term if it looks like a filter expression, not a product name
+                term = args.get("term")
+                if term and isinstance(term, str):
+                    if re.search(r"\b(lt|gt|lte|gte|eq|ne|in|\$lt|\$gt|<=|>=|!=)\b", term):
+                        args["term"] = ""
+
             worker_has = {}
 
             if args:
@@ -1345,16 +927,18 @@ async def chat_model_node(state: MainState):
                     if v and re.match(r"\d{4}-\d{2}-\d{2}", str(v)):
                         worker_has[dk] = v
 
-            # Discard hallucinated dates: if LLM provided dates but they don't
-            # appear in the query text, they are invented — let defaults apply.
-            if worker_has and not re.search(r"\d{4}-\d{2}-\d{2}", combined_q):
+            # Discard hallucinated dates: if LLM provided dates but the query
+            # has no date reference at all (neither YYYY-MM-DD nor a 4-digit year),
+            # they are invented — let defaults apply.
+            if worker_has and not re.search(r"\d{4}-\d{2}-\d{2}|\b\d{4}\b", combined_q):
                 worker_has = {}
 
-            # Preserve worker's explicit non-standard params before overwrite
+            # Preserve worker's explicit non-standard params before overwrite.
+            # Exclude category/categories — category_map + category_to_filter handle them.
             worker_extra = {}
             if repair.get("overwrite") and args:
                 for k, v in args.items():
-                    if k not in ("from_date", "to_date", "fields", "filters") and v is not None:
+                    if k not in ("from_date", "to_date", "fields", "category", "categories") and v is not None:
                         worker_extra[k] = v
 
             new_args = (
@@ -1452,6 +1036,40 @@ async def chat_model_node(state: MainState):
                     if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", combined_q):
                         matched.append(val)
 
+                # Remove generic parent when a specific child also matched.
+                # E.g., "b2c" + "b2c small" → keep only "b2c small".
+                # Only remove when parent val differs from child val
+                # (e.g., "b2c"→"b2cLarge" + "b2c large"→"b2cLarge": same val, keep it).
+                for kw in list(cat_map):
+                    if " " in kw:
+                        parent = kw.split(" ")[0]
+                        pv = cat_map.get(parent)
+                        cv = cat_map[kw]
+                        if pv and pv in matched and cv in matched and pv != cv:
+                            matched.remove(pv)
+
+                # Generic prefix expansion: if a single-word keyword is a prefix of
+                # multi-word keywords (e.g., "b2c" → "b2c small" + "b2c large"),
+                # include all sub-variants when query matches only the parent word.
+                prefix_kws = {}
+                for kw in cat_map:
+                    if " " in kw:
+                        first = kw.split(" ")[0]
+                        prefix_kws.setdefault(first, []).append(kw)
+                for parent, children in prefix_kws.items():
+                    if parent not in cat_map:
+                        continue
+                    parent_val = cat_map[parent]
+                    if parent_val not in matched:
+                        continue
+                    has_specific = any(c in combined_q for c in children)
+                    if not has_specific:
+                        matched.remove(parent_val)
+                        for child in children:
+                            cv = cat_map[child]
+                            if cv not in matched:
+                                matched.append(cv)
+
                 if len(matched) == 1:
                     new_args["category"] = matched[0]
                     new_args.pop("categories", None)
@@ -1477,14 +1095,59 @@ async def chat_model_node(state: MainState):
                 if f:
                     new_args["from_date"] = f
                     new_args["to_date"] = t
-                elif repair.get("overwrite") and not new_args.get("from_date"):
-                    today = __import__("datetime").date.today()
-                    fy_start = today.replace(year=today.year - 1 if today.month < 4 else today.year, month=4, day=1)
-                    new_args["from_date"] = fy_start.isoformat()
-                    new_args["to_date"] = today.isoformat()
 
             if repair.get("remove_filters"):
                 new_args.pop("filters", None)
+
+            low_stock_kws = repair.get("low_stock_only_keywords")
+            if low_stock_kws and new_args.get("low_stock_only") is True:
+                if not any(kw in combined_q for kw in low_stock_kws):
+                    new_args["low_stock_only"] = False
+
+            # Generic value-comparison filter: detect "negative <field>",
+            # "less than 0" / "0 se kam" / "< 0" with a field keyword → {field: {lt: 0}}.
+            # And "positive" / "greater than 0" / "more than 0" / "0 se jyada" → {field: {gt: 0}}.
+            # Applies to fields that look numeric (contain Qty/Value/Rate/Amount/Balance/Count/Gst/St).
+            if "filters" not in new_args:
+                is_lt_zero = bool(re.search(
+                    r"\bnegative\b|\bless\s+th[ae]n\s+0\b|<\s*0\b|\bbelow\s+0\b|0\s+se\s+kam\b",
+                    combined_q,
+                ))
+                is_gt_zero = bool(re.search(
+                    r"\bpositive\b|\bgreater\s+th[ae]n\s+0\b|\bmore\s+th[ae]n\s+0\b|>\s*0\b|\babove\s+0\b|0\s+se\s+jyada\b|0\s+se\s+upar\b",
+                    combined_q,
+                ))
+                if is_lt_zero or is_gt_zero:
+                    operator = "gt" if is_gt_zero else "lt"
+                    for field, aliases in TOOL_INTENT_REGISTRY.get(name, {}).get("field_aliases", {}).items():
+                        if not re.search(r"(Qty|Value|Rate|Amount|Balance|Count|gst|igst|cgst|sgst|cess)", field, re.IGNORECASE):
+                            continue
+                        for alias in aliases:
+                            if (" " in alias and alias in combined_q) or re.search(rf"\b{re.escape(alias)}\b", combined_q):
+                                new_args.setdefault("filters", {})[field] = {operator: 0}
+                                break
+
+            # Normalize malformed filter keys: LLM sometimes sends
+            # "closingQty gt": "2" (space) or "name.contains": "Bangalore" (dot)
+            # instead of the correct nested format {"closingQty": {"gt": 2}}.
+            norm_filters = new_args.get("filters")
+            if norm_filters and isinstance(norm_filters, dict):
+                _ops = {"gt", "gte", "lt", "lte", "eq", "ne", "contains", "in"}
+                for raw_key in list(norm_filters):
+                    norm_key = raw_key.replace(".", " ").strip()
+                    if " " in norm_key:
+                        parts = norm_key.rsplit(" ", 1)
+                        if len(parts) == 2 and parts[1] in _ops:
+                            field_name, operator = parts
+                            raw_val = norm_filters.pop(raw_key)
+                            try:
+                                raw_val = float(raw_val)
+                            except (TypeError, ValueError):
+                                pass
+                            existing = norm_filters.setdefault(field_name, {})
+                            if isinstance(existing, dict):
+                                existing[operator] = raw_val
+                            # If existing is a primitive, that's a conflict — skip.
 
             for f in repair.get("prepend_fields", []):
                 fields = new_args.setdefault("fields", [])
@@ -1512,23 +1175,25 @@ async def chat_model_node(state: MainState):
                 if f not in new_args.get("fields", []):
                     new_args.setdefault("fields", []).append(f)
 
-            all_triggers = get_field_triggers(name)
-
-            if all_triggers:
-                fields = list(new_args.get("fields") or [])
-
-                for kw, triggered_fields in all_triggers.items():
-                    match_found = (
-                        kw in combined_q
-                        if " " in kw
-                        else bool(re.search(rf"\b{re.escape(kw)}\b", combined_q))
-                    )
-
-                    if match_found:
-                        for fld in triggered_fields:
-                            if fld not in fields:
-                                fields.append(fld)
-
+            # Build the field list.
+            # When LLM explicitly sent fields, use those as starting point.
+            # Otherwise, fall back to default_fields.
+            # Then apply curated field_triggers as a safety net for fields the
+            # user asked for but LLM missed. Skip triggers when query has
+            # "sirf"/"only"/"just"/"bas" (user wants ONLY those fields).
+            llm_sent_fields = "fields" in args
+            fields = list(
+                (args.get("fields") or [])
+                if llm_sent_fields
+                else (repair.get("default_fields") or [])
+            )
+            has_strict_marker = bool(re.search(r'\b(sirf|only|just|bas)\b', combined_q))
+            if not has_strict_marker:
+                for kw, fld in repair.get("field_triggers", {}).items():
+                    match = kw in combined_q if " " in kw else bool(re.search(rf'\b{re.escape(kw)}\b', combined_q))
+                    if match and fld not in fields:
+                        fields.append(fld)
+            if fields:
                 new_args["fields"] = fields
 
             strict_kws = repair.get("strict_field_keywords", {})
@@ -1556,19 +1221,46 @@ async def chat_model_node(state: MainState):
                 if llm_arg in new_args and real_param not in new_args:
                     new_args[real_param] = new_args.pop(llm_arg)
 
-            # Convert category to filters when repair config says so
+            # Convert category to filters when repair config says so.
+            # Use "category" (singular) as the filter key to match flattened
+            # GST-summary record fields — the API receives this verbatim but
+            # doesn't actually filter server-side for GST summary.
             if repair.get("category_to_filter"):
+                cat_val = None
                 for cat_key in ("category", "categories"):
                     if cat_key in new_args:
                         cat_val = new_args.pop(cat_key)
-                        if cat_val:
-                            new_args.setdefault("filters", {})[cat_key] = cat_val
+                        break
+                if cat_val:
+                    new_args.setdefault("filters", {})["category"] = cat_val
 
             if name == "get_gst_summary" or name in (
                 "get_tds_outstanding",
                 "get_tcs_outstanding",
             ):
                 print(f"[{name.upper()} FINAL ARGS] {json.dumps(new_args, default=str)}")
+
+            # ──────────────────────────────────────────────────
+            # Generic cross-tool corrections (applied to all tools)
+            # ──────────────────────────────────────────────────
+
+            # 1. Singular min/max query → limit=1.
+            # "sabse kam/jyada X", "least/most/lowest/highest X".
+            # Does not fire when query has an explicit count ("top 3", "first 5").
+            if (
+                re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum)\b', combined_q)
+                and not re.search(r'\b(top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q)
+            ):
+                if "limit" not in new_args or new_args.get("limit", 10) > 5:
+                    new_args["limit"] = 1
+
+            # 2. "Which entity?" query → ensure name field in results.
+            # Patterns: "kis product ka", "kaunsa customer", "which party", etc.
+            if re.search(r'\b(kis|kaunsa|kaun\s*sa|which)\s+(product|customer|party|item|entity)s?\b', combined_q):
+                flds = new_args.get("fields", [])
+                if flds and "name" not in flds:
+                    flds.insert(0, "name")
+                    new_args["fields"] = flds
 
             return {
                 "name": name,
@@ -1596,12 +1288,12 @@ async def chat_model_node(state: MainState):
 
             return _apply_repair(name, args, original_query)
 
-        # Parse tool calls using tolerant multi-block JSON parser
-        blocks = parse_planner_json_blocks(content)
-        planner_calls = normalize_planner_blocks(blocks)
+        # Process bind_tools output — raw_tool_calls from bind_tools is already structured
+        for call in raw_tool_calls:
+            name = call.get("name", "")
+            args = dict(call.get("args", {}))
 
-        for call in planner_calls:
-            repaired = _repair_tool_call(call["name"], call["args"])
+            repaired = _repair_tool_call(name, args)
 
             if repaired:
                 tool_calls.append({
@@ -1622,10 +1314,8 @@ async def chat_model_node(state: MainState):
             )
 
             if extra:
-                # City expansion replaces the original call
                 expanded.extend(extra)
             else:
-                # No city expansion — keep original, then check for multi-identifier
                 expanded.append(call)
                 multi_id_extra = expand_multi_identifier_calls(
                     call["name"],
@@ -1637,33 +1327,26 @@ async def chat_model_node(state: MainState):
         tool_calls = expanded
 
         if tool_calls:
-            # Deduplicate tool calls before execution
             seen = set()
             unique_calls = []
 
             for call in tool_calls:
                 key = json.dumps(
-                    {
-                        "name": call["name"],
-                        "args": call["args"],
-                    },
+                    {"name": call["name"], "args": call["args"]},
                     sort_keys=True,
                     default=str,
                 )
-
                 if key not in seen:
                     seen.add(key)
                     unique_calls.append(call)
 
-            # Safety dedup: keep only first call per name,
-            # EXCEPT tools that can legitimately have multiple calls with different filters
-            MULTI_CALL_OK = {"get_customer", "get_stock_levels"}
             final_calls = []
             seen_names: dict[str, int] = {}
 
             for call in unique_calls:
                 n = call["name"]
-                if n in MULTI_CALL_OK:
+                meta = TOOL_INTENT_REGISTRY.get(n, {})
+                if meta.get("multi_call_ok"):
                     final_calls.append(call)
                 elif n not in seen_names:
                     seen_names[n] = 1
@@ -1672,13 +1355,10 @@ async def chat_model_node(state: MainState):
             tool_calls = final_calls
             response.__dict__["tool_calls"] = tool_calls
 
-            print(f"[FIX] Extracted {len(tool_calls)} tool call(s) from LLM text output")
-
-        # End of injection fixes
+            print(f"[FIX] Extracted {len(tool_calls)} tool call(s) from bind_tools")
 
         print("\n========== WORKER LLM RESPONSE ==========")
         print("response_type:", type(response).__name__)
-        print("content:", repr(content))
         print("tool_call_count:", len(tool_calls))
         print("tool_calls:", tool_calls)
         print("========================================\n")
@@ -1863,46 +1543,9 @@ def wants_unique_party_names(query: str) -> bool:
     """
     q = (query or "").lower()
 
-    party_words = [
-        "customer", "customers",
-        "vendor", "vendors",
-        "supplier", "suppliers",
-        "party", "parties",
-        "grahak",
-        "khareedaar",
-        "vikreta",
-        "aapurti",
-        "jinse",
-        "jisko",
-        "jinko",
-    ]
-
-    name_words = [
-        "name", "names",
-        "naam",
-        "nam",
-    ]
-
-    list_words = [
-        "all",
-        "list",
-        "sare",
-        "saare",
-        "sab",
-        "un sab",
-        "unsab",
-        "unsabke",
-        "jo jo",
-        "badha",
-        "badha aapje",
-        "chaia",
-        "chahiye",
-        "chaiye",
-    ]
-
-    has_party_word = any(word in q for word in party_words)
-    has_name_word = any(word in q for word in name_words)
-    has_list_word = any(word in q for word in list_words)
+    has_party_word = any(word in q for word in PARTY_WORDS)
+    has_name_word = any(word in q for word in NAME_WORDS)
+    has_list_word = any(word in q for word in LIST_WORDS)
 
     return has_party_word and has_name_word and has_list_word
 
@@ -1921,19 +1564,6 @@ def apply_final_postprocessing(
         return final_data
 
     combined_query = f"{original_query or ''} {canonical_query or ''}".strip()
-
-    if wants_unique_party_names(combined_query):
-        if "get_sales_list" in final_data:
-            final_data["get_sales_list"] = dedupe_records_by_field(
-                final_data["get_sales_list"],
-                "billToName",
-            )
-
-        if "get_purchase_list" in final_data:
-            final_data["get_purchase_list"] = dedupe_records_by_field(
-                final_data["get_purchase_list"],
-                "billToName",
-            )
 
     return final_data
 def infer_requested_fields(user_query: str, tool_name: str) -> list[str]:
@@ -2018,10 +1648,27 @@ def requested_gst_categories(query: str) -> list[str]:
         if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", q):
             add(val)
 
-    # Plain B2C without large/small: keep both B2C rows
-    if re.search(r"\bb2c\b", q) and not any(c in categories for c in ["b2cLarge", "b2cSmall"]):
-        add("b2cLarge")
-        add("b2cSmall")
+    # Generic prefix expansion: if a single-word keyword is a prefix of
+    # multi-word keywords (e.g., "b2c" → "b2c small" + "b2c large"),
+    # include all sub-variants when query matches only the parent word.
+    # This mirrors the same logic in _apply_repair — no hardcoded category names.
+    prefix_kws = {}
+    for kw in cat_map:
+        if " " in kw:
+            first = kw.split(" ")[0]
+            prefix_kws.setdefault(first, []).append(kw)
+    for parent, children in prefix_kws.items():
+        if parent not in cat_map:
+            continue
+        parent_val = cat_map[parent]
+        if parent_val not in categories:
+            continue
+        has_specific = any(c in q for c in children)
+        if not has_specific:
+            for child in children:
+                cv = cat_map[child]
+                if cv not in categories:
+                    categories.append(cv)
 
     # Additional keyword checks not in category_map
     if "export" in q or "exports" in q:
@@ -2200,7 +1847,3 @@ async def deterministic_final_node(state: MainState):
 # TOOL NODE
 # ============================================
 tools_node = ToolNode(tools)
-
-
-
-

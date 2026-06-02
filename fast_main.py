@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from src.graph import graph_builder
-from src.config import llm, normalizer_llm
+from src.config import llm, normalizer_llm, get_cfg
 
 
 app = FastAPI(
@@ -138,32 +138,27 @@ def make_error_response(
 DEFAULT_OUTPUT_FORMAT = os.getenv("OUTPUT_FORMAT", "text")
 
 
+_pretty_field_names = get_cfg("pretty_field_names", default={})
+
 def pretty_field_name(key: str) -> str:
-    replacements = {
-        "id": "ID",
-        "name": "Name",
-        "hsnCode": "HSN Code",
-        "closingQty": "Closing Quantity",
-        "closingRate": "Closing Rate",
-        "closingValue": "Closing Value",
-        "openingBalance": "Opening Balance",
-        "openingType": "Opening Type",
-        "voucherCount": "Voucher Count",
-        "taxableAmount": "Taxable Amount",
-        "invoiceAmount": "Invoice Amount",
-        "igst": "IGST",
-        "cgst": "CGST",
-        "sgst": "SGST",
-        "cess": "CESS",
-        "tax": "Total Tax",
-        "category": "Category",
-    }
-
-    if key in replacements:
-        return replacements[key]
-
+    if key in _pretty_field_names:
+        return _pretty_field_names[key]
     spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", key)
     return spaced.replace("_", " ").title()
+
+
+_TOOL_DISPLAY_NAMES = {
+    "get_customer": "Customers",
+    "get_customer_ledger": "Customer Ledger",
+    "get_stock_levels": "Products / Stock",
+    "get_gst_summary": "GST Summary",
+    "get_tds_outstanding": "TDS Outstanding",
+    "get_tcs_outstanding": "TCS Outstanding",
+}
+
+
+def get_tool_display_name(tool_name: str) -> str:
+    return _TOOL_DISPLAY_NAMES.get(tool_name, tool_name.replace("_", " ").title())
 
 
 async def format_response_as_chat_text(
@@ -190,38 +185,23 @@ async def format_response_as_chat_text(
     if not data:
         return "I encountered an issue retrieving those records right now."
 
-    # Flatten data: remove tool name wrapper, just pass the records
-    flat_records = []
+    lines = []
     for tool_name, records in data.items():
-        if isinstance(records, list):
-            flat_records.extend(records)
-        elif isinstance(records, dict):
-            flat_records.append(records)
+        if not isinstance(records, list) or not records:
+            continue
+        label = get_tool_display_name(tool_name)
+        lines.append(f"\n--- {label} ---")
+        for i, record in enumerate(records, 1):
+            if not isinstance(record, dict):
+                lines.append(f"{i}. {record}")
+                continue
+            parts = [pretty_field_name(k) + ": " + str(v) for k, v in record.items() if v is not None]
+            if parts:
+                lines.append(f"{i}. " + ", ".join(parts))
+            else:
+                lines.append(f"{i}. (empty record)")
 
-    payload_to_process = {
-        "user_query": query,
-        "data": flat_records,
-    }
-
-    system_instruction = (
-        "You are a helpful ERP assistant. Answer the user's question directly using the provided data. "
-        "Reply in a natural, conversational tone like ChatGPT or Gemini. "
-        "Do NOT mention tool names, field names, JSON structure, or technical details. "
-        "Do NOT say 'retrieved_data' or 'get_customer' or 'get_stock_levels'. "
-        "Just give the answer the user wants — like a knowledgeable assistant would. "
-        "Use plain text only. Keep it concise."
-    )
-
-    try:
-        response = await normalizer_llm.ainvoke([
-            SystemMessage(content=system_instruction),
-            HumanMessage(content=json.dumps(payload_to_process, ensure_ascii=False)),
-        ])
-
-        return str(response.content).strip()
-
-    except Exception:
-        return f"Here is the data found: {json.dumps(data, ensure_ascii=False)}"
+    return "\n".join(lines) if lines else "No data found."
 
 
 async def run_graph_query(

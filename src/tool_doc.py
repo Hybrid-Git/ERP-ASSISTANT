@@ -11,11 +11,13 @@ from langchain_core.documents import Document
 #   prompt_tips: short instruction injected into the system prompt by build_system_prompt()
 # ============================================================
 
-CITY_WORDS = [
+from src.config import get_cfg
+
+CITY_WORDS = get_cfg("cities", default=[
     "BANGALORE", "KOLKATA", "MUMBAI", "DELHI", "SURAT",
     "AHMEDABAD", "PUNE", "CHENNAI", "HYDERABAD",
     "BHIWANDI", "TAURU", "GUWAHATI", "PUNJAB",
-]
+])
 
 
 def _build_field_triggers(field_aliases: dict) -> dict:
@@ -35,10 +37,12 @@ def _build_field_triggers(field_aliases: dict) -> dict:
 TOOL_INTENT_REGISTRY = {
     "get_customer": {
         "category": "customer",
+        "multi_call_ok": True,
         "description": "Search customers or parties and return id, name, opening balance and opening type.",
-        "prompt_tips": "Brand+city (e.g. Nykaa Bangalore): search=brand, filters=name.contains city.",
+        "prompt_tips": "Brand+city (e.g. Nykaa Bangalore): search=brand, filters=name.contains city. City/location alone also works: search=city_name.",
         "aliases": [
             "customer", "customers", "party", "parties", "client", "buyer", "grahak",
+            "customer_report",
         ],
         "keywords": [
             "customer id", "party id", "customer name", "party name",
@@ -68,6 +72,7 @@ TOOL_INTENT_REGISTRY = {
         "prompt_tips": "customer_id=int, dates YYYY-MM-DD, fields=ledgerName,opening,current,closing,period[,transactions].",
         "aliases": [
             "ledger", "account statement", "statement", "khata", "hisab",
+            "customer_ledger",
         ],
         "keywords": [
             "customer ledger", "ledger balance", "closing balance", "current balance",
@@ -99,11 +104,12 @@ TOOL_INTENT_REGISTRY = {
 
     "get_stock_levels": {
         "category": "stock",
+        "multi_call_ok": True,
         "description": "Fetch stock and inventory levels using product name, SKU or HSN; returns closing quantity/value, low stock and out-of-stock details.",
         "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt.",
         "aliases": [
             "stock", "inventory", "product", "products", "item", "items",
-            "maal", "jaththo", "satha",
+            "maal", "jaththo", "satha", "stock_levels", "stock_report",
         ],
         "keywords": [
             "hsn", "hsn code", "sku", "closing quantity", "closing qty",
@@ -129,10 +135,10 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "overwrite": False,
             "hsn_extract": True,
-            "default_fields": ["name", "id", "hsnCode", "closingQty"],
-            "ensure_fields": ["name", "hsnCode", "closingQty"],
+            "default_fields": ["name"],
             "field_triggers": {"value": "closingValue"},
             "param_aliases": {"name": "term"},
+            "low_stock_only_keywords": ["low stock", "out of stock", "out-of-stock", "stock out", "low inventory"],
         },
     },
 
@@ -140,17 +146,24 @@ TOOL_INTENT_REGISTRY = {
         "category": "gst_report",
         "description": "Fetch GST summary/report by date range; supports B2B, B2C, exports, nil/exempt, credit notes and grand total rows.",
         "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nillRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter.",
-        "aliases": ["gst", "gstr", "gst summary", "gst report"],
+        "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge"],
         "keywords": [
-            "b2b", "b2c", "b2c large", "b2c small", "exports", "export",
-            "nil rated", "exempt", "igst", "cgst", "sgst", "cess",
-            "taxable amount", "invoice amount", "voucher count", "grand total", "total gst",
+            "b2b", "b2c", "b2c large", "b2clarge", "b2c small", "b2csmall",
+            "exports", "export",
+            "nil rated", "nilrated", "exempt",
+            "igst", "cgst", "sgst", "cess",
+            "taxable amount", "taxableamount", "invoice amount", "invoiceamount",
+            "voucher count", "vouchercount",
+            "grand total", "grandtotal", "total gst", "totalgst",
+            "credit note", "creditnotes", "credit notes",
+            "credit note registered", "creditnoteregistered",
+            "credit note unregistered", "creditnoteunregistered",
         ],
         "fields": [
             "category", "name", "voucherCount", "taxableAmount", "igst", "cgst",
             "sgst", "cess", "tax", "invoiceAmount",
         ],
-        "default_fields": ["category", "name"],
+        "default_fields": ["category", "name", "voucherCount", "taxableAmount", "igst", "cgst", "sgst", "cess", "tax", "invoiceAmount"],
         "include_all_on_no_trigger": True,
         "field_aliases": {
             "category": ["category", "b2b", "b2c", "exports", "nil", "grand total"],
@@ -169,7 +182,7 @@ TOOL_INTENT_REGISTRY = {
             "base_args": {
                 "from_date": "",
                 "to_date": "",
-                "fields": ["category", "name"],
+                "fields": ["category", "name", "voucherCount", "taxableAmount", "igst", "cgst", "sgst", "cess", "tax", "invoiceAmount"],
             },
             "date_keywords": ["gst", "b2b", "grand total", "b2c", "exports", "nil", "exempt", "igst", "cgst", "sgst", "cess", "taxable", "invoice"],
             "remove_filters": True,
@@ -329,6 +342,14 @@ def infer_requested_fields_from_registry(user_query: str, tool_name: str) -> lis
 
     return list(dict.fromkeys(fields))
 
+
+# Build alias→tool_name map from registry (replaces hardcoded TOOL_NAME_ALIASES in nodes.py)
+TOOL_NAME_ALIASES = {}
+for _tn, _meta in TOOL_INTENT_REGISTRY.items():
+    for _alias in _meta.get("aliases", []):
+        _alias_key = _alias.replace(" ", "_")
+        if _alias_key not in TOOL_NAME_ALIASES:
+            TOOL_NAME_ALIASES[_alias_key] = _tn
 
 TOOL_DOCUMENTS = []
 

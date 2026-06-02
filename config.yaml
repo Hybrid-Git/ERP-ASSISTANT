@@ -1,0 +1,272 @@
+# ── Pipeline configuration ──────────────────────────────────────
+# All hardcoded word lists, thresholds, and constants extracted from source.
+# Edit this file to add cities, language hints, or adjust routing.
+
+cities:
+  - BANGALORE
+  - KOLKATA
+  - MUMBAI
+  - DELHI
+  - SURAT
+  - AHMEDABAD
+  - PUNE
+  - CHENNAI
+  - HYDERABAD
+  - BHIWANDI
+  - TAURU
+  - GUWAHATI
+  - PUNJAB
+
+hinglish:
+  non_english_hints:
+    - batao
+    - batavo
+    - dikhao
+    - dakhva
+    - joiye
+    - batana
+    - ka
+    - ke
+    - ki
+    - "no"
+    - "nu"
+    - na
+    - ane
+    - aur
+    - ani
+    - wala
+    - wale
+    - jisme
+    - jema
+    - madhle
+    - kam
+    - ochhi
+    - ochhu
+    - ochha
+    - zyada
+    - vadhu
+    - jast
+    - adhik
+    - baki
+    - thakbaki
+    - khata
+    - hisab
+    - jaththo
+    - satha
+    - mai
+    - jo
+    - hai
+    - uska
+    - uski
+    - uske
+    - chaia
+    - chahiye
+    - chaiye
+    - mera
+    - meri
+    - tere
+    - tera
+    - kya
+    - kaun
+    - konsa
+    - konse
+    - kitna
+    - kitni
+    - yaha
+    - vaha
+
+  multilingual_words:
+    - ka
+    - ke
+    - ki
+    - ko
+    - se
+    - me
+    - mein
+    - mai
+    - aur
+    - ane
+    - ani
+    - batao
+    - batavo
+    - dikhao
+    - dakhvo
+    - dakhva
+    - kitna
+    - kitni
+    - kya
+    - rakam
+    - paisa
+    - baki
+    - kam
+    - zyada
+    - vadhu
+    - ochhi
+    - ochhu
+    - grahak
+    - maal
+    - chhe
+    - che
+    - wala
+    - wale
+    - jiska
+    - jinki
+    - jisme
+    - jo
+    - hai
+    - uska
+    - uski
+    - uske
+    - chaia
+    - chahiye
+    - chaiye
+
+route_keywords:
+  - customer
+  - customer id
+  - party
+  - client
+  - buyer
+  - grahak
+  - opening balance
+  - opening type
+  - ledger
+  - account statement
+  - statement
+  - transactions
+  - closing balance
+  - current balance
+  - khata
+  - hisab
+  - stock
+  - inventory
+  - product
+  - products
+  - item
+  - items
+  - hsn
+  - hsn code
+  - sku
+  - closing quantity
+  - closing qty
+  - low stock
+  - out of stock
+  - maal
+  - jaththo
+  - satha
+  - gst
+  - gst summary
+  - gst report
+  - b2b
+  - b2c
+  - igst
+  - cgst
+  - sgst
+  - tds
+  - tcs
+
+connectors:
+  - aur
+  - ane
+  - ani
+  - also
+  - and
+  - plus
+
+stop_tokens:
+  - KA
+  - CUSTOMER
+  - ID
+  - AUR
+  - NAAM
+  - BATAO
+  - BHI
+  - VALA
+  - DIKHAO
+  - KI
+  - KO
+  - KE
+  - KAA
+  - PAN
+
+segment_next_keywords:
+  - nykaa
+  - customer id
+  - hsn
+  - gst
+  - b2b
+  - grand total
+  - tds
+  - tcs
+  - sales invoice
+  - purchase invoice
+  - ledger
+  - customer
+  - stock
+  - product
+
+thresholds:
+  embedding_recall_min: 0.3
+  reranker_min: 0.5
+  reranker_top_k: 5
+
+cross_encoder_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# used by wants_unique_party_names()
+party_words:
+  - customer
+  - customers
+  - vendor
+  - vendors
+  - supplier
+  - suppliers
+  - party
+  - parties
+  - grahak
+  - khareedaar
+  - vikreta
+  - aapurti
+  - jinse
+  - jisko
+  - jinko
+
+name_words:
+  - name
+  - names
+  - naam
+  - nam
+
+list_words:
+  - all
+  - list
+  - sare
+  - saare
+  - sab
+  - un sab
+  - unsab
+  - unsabke
+  - jo jo
+  - badha
+  - badha aapje
+  - chaia
+  - chahiye
+  - chaiye
+
+pretty_field_names:
+  id: ID
+  name: Name
+  hsnCode: HSN Code
+  closingQty: Closing Quantity
+  closingRate: Closing Rate
+  closingValue: Closing Value
+  openingBalance: Opening Balance
+  openingType: Opening Type
+  voucherCount: Voucher Count
+  taxableAmount: Taxable Amount
+  invoiceAmount: Invoice Amount
+  igst: IGST
+  cgst: CGST
+  sgst: SGST
+  cess: CESS
+  tax: Total Tax
+  category: Category

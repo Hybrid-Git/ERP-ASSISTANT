@@ -1,59 +1,59 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from langchain_ollama import OllamaEmbeddings
-from langchain_groq import ChatGroq # type: ignore
-# from langchain_huggingface import ChatHuggingFace,HuggingFaceEndpoint
 import os
-# embedding_model = OllamaEmbeddings(model = "nomic-embed-text")
+import yaml
+from langchain_ollama import OllamaEmbeddings, ChatOllama
 
-token = os.environ.get("GROQ_API_KEY")
-# token = os.environ.get("HUGGINGFACE_API_KEY")
+embedding_model = OllamaEmbeddings(model="bge-m3")
 
-embedding_model = OllamaEmbeddings(model = "bge-m3")
-
-
-normalizer_llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+normalizer_llm = ChatOllama(
+    model="qwen3:latest",
     temperature=0.0,
-    api_key=token,
+    keep_alive="30m",
+    num_ctx=1024,
+    num_predict=512,
+    reasoning=False,
 )
-
-# model = HuggingFaceEndpoint(repo_id="deepseek-ai/DeepSeek-V4-Pro",huggingfacehub_api_token=token,temperature=0.0)
-# llm = ChatHuggingFace(llm=model)
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+llm = ChatOllama(
+    model="qwen3:latest",
     temperature=0.0,
-    api_key=token,
+    keep_alive="30m",
+    num_ctx=4096,
+    num_predict=2048,
+    reasoning=False,
 )
-# llm = ChatOllama(
-#     model="qwen3:8b-q4_K_M",
-#     base_url="http://localhost:11434",
-#     temperature=0.0,
-#     keep_alive="30m",
-#     num_ctx=2048,
-# )
-# llm = ChatOllama(
-#     model="Phi4-mini:latest",
-#     temperature=0.0,
-#     keep_alive="30m",
-#     num_ctx=2048,
-# )
-
-# router_llm = ChatOllama(
-#     model="qwen3:14b-q4_K_M ",
-#     temperature=0.0,
-#     keep_alive="30m",
-#     num_ctx=2048,
-# )
 
 print("LLM and embedding model initialised!")
 
-
-CHP1_API_BASE_URL = os.getenv("CHP1_API_BASE_URL","https://dev.chapter1.finance/aiAnalytics/")
+# ── API config (env vars) ──
+CHP1_API_BASE_URL = os.getenv("CHP1_API_BASE_URL", "https://dev.chapter1.finance/aiAnalytics/")
 CHP1_API_TOKEN = os.getenv("CHP1_API_TOKEN", "")
-# CHP1_API_TIMEOUT = int(os.getenv("CHP1_API_TIMEOUT", "30"))
 CHP1_API_TIMEOUT = int(os.getenv("CHP1_API_TIMEOUT", "10"))
-
 COMPANY_ID = int(os.getenv("COMPANY_ID", "355"))
 
+# ── Pipeline config (YAML — edit config.yaml, not Python) ──
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
+
+
+def _load_pipeline_config():
+    try:
+        with open(_CONFIG_PATH) as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"Warning: could not load {_CONFIG_PATH}: {e}")
+        return {}
+
+
+PIPELINE_CONFIG = _load_pipeline_config()
+
+
+def get_cfg(*keys, default=None):
+    """Safely traverse PIPELINE_CONFIG with dotted keys."""
+    val = PIPELINE_CONFIG
+    for k in keys:
+        if isinstance(val, dict):
+            val = val.get(k)
+        else:
+            return default
+    return val if val is not None else default
