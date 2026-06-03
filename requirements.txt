@@ -16,3 +16,4 @@ python-dotenv
 langchain_groq
 langchain_nvidia_ai_endpoints
 langchain_huggingface
+sentence-transformers

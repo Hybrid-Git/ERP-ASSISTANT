@@ -19,7 +19,15 @@ llm = ChatOllama(
     model="qwen3:latest",
     temperature=0.0,
     keep_alive="30m",
-    num_ctx=4096,
+    num_ctx=8192,
+    num_predict=2048,
+    reasoning=False,
+)
+summary_llm = ChatOllama(
+    model="qwen3:latest",
+    temperature=0.0,
+    keep_alive="30m",
+    num_ctx=8192,
     num_predict=2048,
     reasoning=False,
 )

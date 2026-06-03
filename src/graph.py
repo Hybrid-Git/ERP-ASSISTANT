@@ -7,10 +7,11 @@ from src.nodes import (
     routing_node,
     deterministic_final_node,
     translator_node,
+    summarization_node,
 )
 import time
 import inspect
-
+from langgraph.checkpoint.memory import MemorySaver
 
 def timed_node(node_name: str, node_func):
     async def wrapper(state):
@@ -75,7 +76,7 @@ def graph_builder():
             "deterministic_final",
             timed_node("deterministic_final", deterministic_final_node),
         )
-
+        builder.add_node("summarization", timed_node("summarization", summarization_node))
         builder.add_edge(START, "translator")
         builder.add_edge("translator", "semantic_search")
 
@@ -93,9 +94,12 @@ def graph_builder():
         )
 
         builder.add_edge("tools", "deterministic_final")
-        builder.add_edge("deterministic_final", END)
+        builder.add_edge("deterministic_final", "summarization")
+        builder.add_edge("summarization", END)
 
-        graph = builder.compile()
+        memory = MemorySaver()
+
+        graph = builder.compile(checkpointer=memory)
 
     except Exception as e:
         print(f"Error building graph: {e}")

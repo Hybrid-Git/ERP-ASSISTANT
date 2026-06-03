@@ -27,8 +27,8 @@ class MainState(TypedDict):
     detected_language: str
     skip_router: bool
     unsupported_parts: list[str]
-
-    conversation_summary: str #Conversation's summary
+    summary:str #Summary of the conversation so far, to be prepended to the prompt in each loop iteration. Updated after each iteration with the latest summary from the LLM.
+    # conversation_summary: str #Conversation's summary
     
 class OutputState(TypedDict):
     final_response: str

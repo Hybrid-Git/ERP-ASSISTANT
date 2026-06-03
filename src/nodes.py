@@ -1,9 +1,9 @@
 from src.schema import MainState
 from src.tools_api import tools_dict, tools
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES, get_field_triggers, infer_requested_fields_from_registry, CITY_WORDS
-from src.config import llm, normalizer_llm, get_cfg
+from src.config import llm, normalizer_llm, get_cfg,summary_llm
 import time
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage,RemoveMessage
 from langgraph.prebuilt import ToolNode
 import json
 import re
@@ -484,7 +484,8 @@ def _build_field_examples(tool_name: str, meta: dict) -> list[str]:
 def build_system_prompt(
     user_query: str,
     selected_tools: list[str],
-    query_parts: list[str] | None = None
+    query_parts: list[str] | None = None,
+    summary: str | None = None,
 ) -> str:
     lines = [
         "You are an ERP assistant. Use the available tools to answer the user.",
@@ -507,7 +508,10 @@ def build_system_prompt(
             meta = TOOL_INTENT_REGISTRY.get(tool_name)
             if meta and meta.get("prompt_tips"):
                 lines.append(f"  {tool_name}: {meta['prompt_tips']}")
-
+    if summary:
+        lines.append("--- PREVIOUS CONVERSATION CONTEXT ---")
+        lines.append(summary)
+        lines.append("-------------------------------------")
     lines.append("")
     lines.append("Example:")
     lines.append("  user: show me b2b invoices for april 2024")
@@ -764,7 +768,7 @@ async def chat_model_node(state: MainState):
         selected_tools = state.get("selected_tools", [])
         query_parts = state.get("query_parts", [user_query])
         loop_count = state.get("loop_count", 0)
-
+        summary = state.get("summary", "")
         previous_messages = [
             msg for msg in state.get("messages", [])
             if not isinstance(msg, SystemMessage)
@@ -807,6 +811,7 @@ async def chat_model_node(state: MainState):
             user_query=user_query,
             selected_tools=selected_tools,
             query_parts=query_parts,
+            summary=summary,
         )
 
         prompt_duration = time.perf_counter() - prompt_start
@@ -1716,10 +1721,15 @@ async def deterministic_final_node(state: MainState):
     data = {}
     tools_used = []
     errors = []
-
+    current_tool_call_ids = set()
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            current_tool_call_ids = {tc.get("id") for tc in msg.tool_calls if tc.get("id")}
+            break
     tool_messages = [
         msg for msg in messages
         if isinstance(msg, ToolMessage)
+        and (not current_tool_call_ids or msg.tool_call_id in current_tool_call_ids)
     ]
     # 🚀 DYNAMIC AMBIGUITY EVALUATOR (Zero Hardcoding)
     if not tool_messages:
@@ -1847,3 +1857,74 @@ async def deterministic_final_node(state: MainState):
 # TOOL NODE
 # ============================================
 tools_node = ToolNode(tools)
+
+#==============================================
+# SUMMARIZATION NODE
+#==============================================
+
+@traceable(name="summarization_node", run_type="chain")
+async def summarization_node(state: MainState):
+    """
+    Summarizes the context of the conversation so far, including tool calls and their results after reaching a certain number of iterations 
+    or when the user asks for a summary. This helps to keep the conversation focused and provides a recap for the user.
+    """
+    print("Summarization node activated............")
+    messages = state.get("messages", [])
+    current_summary = state.get("summary","")
+    try:
+        #We will get all the indices of the human messages in the conversation
+        human_indices = [i for i, msg in enumerate(messages) if isinstance(msg, HumanMessage)]
+
+        #Threshold check will be done after 3 iterations of human messages
+        if len(human_indices) < 3:
+            print(f"Summary skipped............... Only {len(human_indices)} human messages so far.")
+            return{}
+        #Safe Cutoff: We keep the most recent query and everything after it.
+        # Everything BEFORE it gets summarized and deleted.
+        cutoff_index = human_indices[-1]
+
+        #We wille exclude system messages from the summary payload to save tokens
+        messages_to_summarize = [m for m in messages[:cutoff_index] if not isinstance(m, SystemMessage)]
+        if not messages_to_summarize:
+            return{}
+        
+        print(f"Summary triggered after and now removing  {len(human_indices)}old messages...............")
+
+
+        summary_prompt = (
+            f"You are an ERP assistant memory manager.\n"
+            f"PREVIOUS SUMMARY:\n{current_summary or '(none)'}\n\n"
+            f"NEW CONVERSATION:\n"
+            f"(see messages below)\n\n"
+            f"TASK: Write an updated summary that APPENDS the new information "
+            f"after the previous summary. Keep the previous summary text exactly as-is -- "
+            f"do NOT shorten, drop or rephrase anything from it. "
+            f"Only add new facts at the end."
+        )
+        summary_input = [SystemMessage(content=summary_prompt)] + messages_to_summarize
+        response = await summary_llm(summary_input)
+        new_summary = response.content
+        if not new_summary:
+            new_summary = current_summary or ""
+        MAX_SUMMARY_CHARS = 16000 #16000 characters will be roughly aroound 4000 tokens.
+        if len(new_summary) > MAX_SUMMARY_CHARS:
+            tail = new_summary[-MAX_SUMMARY_CHARS:]
+            idx = tail.find("\n\n")
+            if idx != -1:
+                tail = tail[idx+2:]
+            new_summary = "... (truncated) ...\n\n" + tail
+        #we will issue deletion request to langgraph
+        #We will need an id to delete messages which langchain generates automatically so we will use it
+
+        delete_messages = [RemoveMessage(id=msg.id) for msg in messages_to_summarize if msg.id]
+
+        print(f"Deleting {len(delete_messages)} old messages")
+        return {
+            "summary": new_summary,
+            "messages": delete_messages,
+        }
+    except Exception as e:
+        print(f"Error while removing messages and updating summary: {e}")
+        return {
+            "summary": current_summary or "",
+        }

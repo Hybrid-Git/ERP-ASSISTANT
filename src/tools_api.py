@@ -226,6 +226,12 @@ def project_fields(records, fields=None):
         if projected:
             projected_records.append(projected)
 
+    # If ALL records were stripped due to field name mismatch
+    # (e.g. LLM asked for "customer_id" but API field is "id"),
+    # return original records instead of silently returning empty data.
+    if not projected_records and records:
+        return records
+
     return projected_records
 
 
@@ -446,11 +452,24 @@ def get_customer(
     a customer before fetching customer ledger.
 
     Args:
-        search: Customer name, party name, ledger name, or search keyword.
+        search: Customer name or party name (substring match). Use empty string "" to return ALL customers.
+            Do NOT pass concepts like "outside india" or city names as search; those are not customer names.
         limit: Number of records to fetch. Default is 10.
         fields: Optional output columns.
         filters: Optional exact filters.
     """
+
+    # ── Sanitize search parameter ──
+    # The LLM often treats `search` as a semantic filter instead of a name lookup.
+    # These guards convert bad search terms into empty search (return all customers).
+    raw_search = search
+    if search:
+        stripped = search.strip().lower()
+        # 1. Fetch-all keywords → empty search
+        non_specific = {"all", "all customers", "all parties", "all ledgers", "everyone", "every customer"}
+        # 2. Comma-separated list (e.g. "kolkata,punjab,bangalore") → not a real name
+        if stripped in non_specific or "," in search:
+            search = ""
 
     body = {
         "companyId": COMPANY_ID,
