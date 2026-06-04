@@ -1,6 +1,6 @@
 # Chapter1-Assist
 
-A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the backend API, and returning structured JSON or plain-text responses.
+A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the backend API, and returning structured JSON or natural-language responses.
 
 **Author:** Yash Sheth
 
@@ -17,7 +17,7 @@ Chapter1-Assist connects to the Chapter-1 ERP backend and answers natural langua
 - TDS outstanding reports
 - TCS outstanding reports
 
-The system uses two local LLMs: a small translator (1024 ctx) for optional Hinglish→English normalization and a full-size worker (8192 ctx) for tool-call generation. No external API costs.
+The system uses three local LLMs: a small translator (4B, 1024 ctx) for optional Hinglish→English normalization, a full-size worker (8B, 8192 ctx) for tool-call generation, and a summary LLM (8B, 8192 ctx) for natural-language responses and conversation summarization. No external API costs.
 
 ---
 
@@ -25,13 +25,14 @@ The system uses two local LLMs: a small translator (1024 ctx) for optional Hingl
 
 ```
 START
-  -> translator            (Ollama qwen3:latest — optional Hinglish→English, language detection with fast-path shortcuts)
+  -> translator            (Ollama qwen3:4b — optional Hinglish→English, language detection with fast-path shortcuts)
   -> semantic_search       (bge-m3 embedding + cross-encoder rerank + keyword fallback)
   -> chat_model            (Ollama qwen3:latest with bind_tools — native tool calling + retry loop + repair layer)
-  -> routing_node          (conditional: tool_calls found? → tools, else → END)
+  -> routing_node          (conditional: tool_calls found? → tools | memory_answer? → response_generation | else → END)
   -> tools                 (executes backend APIs)
-  -> deterministic_final   (Python dict builder — no LLM call, no hallucination)
-  -> summarization         (optional conversation summarization after 3+ human messages)
+  -> deterministic_final   (Python dict builder — scopes results to current turn, builds conversation_context)
+  -> response_generation   (LLM natural-language response mirroring user's language)
+  -> summarization         (optional after 6+ human messages — context trim via RemoveMessage)
   -> END
 ```
 
@@ -39,13 +40,14 @@ START
 
 | Node | Responsibility |
 |---|---|
-| `translator` | Detects Hinglish/Hindi/Gujarati via script detection and keyword lists. Only invokes LLM when needed — has 3 fast-path shortcuts for plain English, routeable queries, and no-normalization-needed cases. Stores both `original_query` and `canonical_query`. |
-| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. No LLM used — purely deterministic scoring. Splits multi-intent queries by connector words. |
-| `chat_model` | Generates tool calls using Ollama native `bind_tools()` with internal retry loop (up to 3 rounds) when the LLM emits fewer calls than requested tools. Followed by `_apply_repair` — a registry-driven arg fixup layer that handles param aliases, date hallucination detection, category mapping, filter normalization, and generic cross-tool corrections. |
-| `routing_node` | Routes to `tools` if the last message has tool_calls, otherwise ends the graph. Falls through after `loop_count > 5`. |
+| `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — has 3 fast-path shortcuts for plain English, routeable queries, and no-normalization-needed cases. Model: `qwen3:4b`. Stores both `original_query` and `canonical_query`. |
+| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. No LLM used — purely deterministic scoring. Splits multi-intent queries by connector words. Detects meta-questions ("what did we ask?") and returns empty tool list. |
+| `chat_model` | Generates tool calls using Ollama native `bind_tools()` with internal retry loop (up to 3 rounds) when the LLM emits fewer calls than requested tools. Followed by `_apply_repair` — a registry-driven arg fixup layer handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, cross-tool corrections, and multi-identifier expansion. Falls back to `memory_answer` via summary LLM when no tools are selected. |
+| `routing_node` | Routes to `tools` if the last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends the graph. Falls through after `loop_count > 5`. |
 | `tools` | Executes the 6 ERP tool functions against the Chapter-1 backend API via `ToolNode`. |
-| `deterministic_final` | Builds final JSON response from tool output using pure Python. No LLM involved — prevents hallucination of names, amounts, IDs, or quantities. Aggregates errors, deduplicates records, applies GST category filtering. |
-| `summarization` | After 3+ human messages, summarizes old conversation context and deletes past messages using `RemoveMessage`. Keeps the most recent query intact. |
+| `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids` (prevents cross-query data leak). Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities, persists `last_tool_call` across summarization. |
+| `response_generation` | Generates natural-language response mirroring the user's language (Hinglish/Hindi/English). Uses summary LLM with language-aware system prompt. Falls back to inline text builder on error. Directly returns `memory_answer` when no tools were called. |
+| `summarization` | After 6+ human messages (3+ exchanges), summarizes old conversation context using summary LLM and deletes past messages via `RemoveMessage`. Strips `raw_response` from ToolMessage content before summary input. Caps summary at 16000 characters. |
 
 ---
 
@@ -66,7 +68,7 @@ START
 
 ### Local LLMs, No External API
 
-Worker and translator are both `qwen3:latest` (8B) running locally via Ollama with `reasoning=False`. No Groq/OpenAI keys, no rate limits, no per-query cost.
+Worker and summary LLM use `qwen3:latest` (8B); translator uses `qwen3:4b` (4B) — all running locally via Ollama with `reasoning=False`. No Groq/OpenAI keys, no rate limits, no per-query cost.
 
 ### Fast-Path Translator
 
@@ -89,7 +91,7 @@ Worker LLM uses `llm.bind_tools().ainvoke()`. Ollama's tool-calling API handles 
 
 ### Deterministic Final Response (No Hallucination)
 
-The `deterministic_final_node` builds responses using pure Python. Tool output is parsed, filtered, projected, and formatted without any LLM. This guarantees accurate amounts, names, and counts.
+The `deterministic_final_node` builds responses using pure Python. Tool output is parsed, filtered, projected, and formatted without any LLM. This guarantees accurate amounts, names, and counts. Results are scoped to the current turn's `tool_call_ids` to prevent cross-query data leak.
 
 ### Config-Driven Repair System
 
@@ -99,9 +101,12 @@ Tool argument repair uses `TOOL_INTENT_REGISTRY` in `src/tool_doc.py`:
 - **`category_map`** — maps category keywords with auto-generated no-space variants and prefix expansion
 - **`date hallucination detection`** — discards dates the LLM invented when query has no date reference
 - **`field_triggers`** — adds fields user asked for but LLM missed; `sirf`/`only`/`just`/`bas` disables them
-- **`hsn_extract`** — extracts 8-digit HSN codes with optional product name
+- **`hsn_extract`** — extracts 8-digit HSN codes with optional product name from labeled format
 - **`category_to_filter`** — converts category keywords to API filter params
 - **`strict_field_keywords`** — locks fields to a narrow set on exact keyword match
+- **`extract_customer_id`** — regex-based customer ID extraction
+- **`city_filter`** — applies city-based filtering from query keywords
+- **`low_stock_only_keywords`** — detects low-stock intent from query phrases
 
 ### Generic Cross-Tool Corrections
 
@@ -109,14 +114,22 @@ Applied after all tool-specific repairs:
 
 - **Min/max → limit=1**: "sabse kam/jyada", "least/most" → forces `limit=1`
 - **"Which entity?" → ensure name**: "kis product ka", "kaunsa customer" → prepends `name` to fields
+- **Value-comparison filters**: "N se jyada/kam", "greater/less than N" → injects filter params
+- **Malformed filter key normalization**: "closingQty gt: 2" → `{"closingQty": {"gt": 2}}`
 
-### Positive/Negative Value Filters
+### Conversation Memory & Context
 
-Automatically injects value-comparison filters for queries mentioning negative/positive values like "negative closing qty", "0 se kam", "greater than 0".
+- **`memory_answer`** — when no tools are relevant, the summary LLM answers from conversation history
+- **`conversation_context`** — entity tracking (customer/product names, IDs) across turns
+- **`last_tool_call`** — persists tool arguments across summarization for follow-up queries
+
+### Natural-Language Response Generation
+
+The `response_generation_node` uses the summary LLM to craft responses that mirror the user's language (Hinglish, Hindi, or English). Language detection with Hinglish word-list override ensures appropriate tone.
 
 ### Multi-Identifier Queries
 
-Queries like "49090090 aur id 349 dono ka stock status" are split into separate tool calls — one per identifier.
+Queries like "49090090 aur id 349 dono ka stock status" are split into separate tool calls — one per identifier. Controlled by `multi_call_ok` safety (only customer and stock tools allow duplicates).
 
 ### GST Category Filtering
 
@@ -134,6 +147,10 @@ When LLM-requested fields don't match actual API field names, returns original r
 
 Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts locally by requested field, truncates to limit.
 
+### API-Level Caching
+
+`cached_api_post` uses `OrderedDict` with TTL (600s) and maxsize 100 — uses `time.monotonic()` for drift-free expiry.
+
 ---
 
 ## Tech Stack
@@ -143,12 +160,13 @@ Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts loc
 | Framework | FastAPI |
 | Graph Engine | LangGraph |
 | Worker LLM | `qwen3:latest` (8B) via Ollama (`reasoning=False`, `num_ctx=8192`) |
-| Translator LLM | `qwen3:latest` (8B) via Ollama (`reasoning=False`, `num_ctx=1024`) |
+| Translator LLM | `qwen3:4b` (4B) via Ollama (`reasoning=False`, `num_ctx=1024`) |
 | Summary LLM | `qwen3:latest` (8B) via Ollama (`reasoning=False`, `num_ctx=8192`) |
 | Embeddings | `bge-m3` via Ollama |
 | Cross-encoder reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
 | Backend | Chapter-1 ERP API |
 | HTTP client | `requests` (sync) |
+| UI (optional) | Streamlit |
 
 ---
 
@@ -157,6 +175,7 @@ Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts loc
 ```text
 CHAPTER1-ASSIST/
 ├── fast_main.py              # FastAPI entry point, cache, session management, response formatting
+├── streamlit_app.py          # Streamlit chat UI (optional client)
 ├── config.yaml               # Pipeline config (cities, thresholds, keywords, field names)
 ├── requirements.txt          # Python dependencies
 ├── .env                      # Environment variables (not committed)
@@ -167,9 +186,9 @@ CHAPTER1-ASSIST/
 │   ├── schema.py             # State/schema definitions (MainState, InputState, OutputState)
 │   ├── api_client.py         # HTTP client for Chapter-1 ERP API
 │   ├── tools_api.py          # ERP tool functions (API calls, caching, filtering, projection)
-│   ├── tool_doc.py           # Tool registry, repair configs, field aliases, category maps
-│   ├── nodes.py              # All LangGraph nodes (translator, semantic search, chat model, routing, deterministic final, summarization)
-│   └── graph.py              # StateGraph builder with conditional routing
+│   ├── tool_doc.py           # Tool registry (TOOL_INTENT_REGISTRY), repair configs, field aliases, category maps
+│   ├── nodes.py              # All LangGraph nodes (translator, semantic search, chat model, routing, deterministic final, response generation, summarization)
+│   └── graph.py              # StateGraph builder with conditional routing and timed_node wrapper
 │
 └── README.md
 ```
@@ -201,6 +220,7 @@ Pull Ollama models:
 
 ```bash
 ollama pull qwen3:latest
+ollama pull qwen3:4b
 ollama pull bge-m3
 ```
 
@@ -210,6 +230,8 @@ The cross-encoder downloads on first startup.
 
 ## Running
 
+### FastAPI Server
+
 ```bash
 python fast_main.py
 ```
@@ -217,6 +239,16 @@ python fast_main.py
 Server: `http://127.0.0.1:8000`
 
 First startup takes ~5-10s for cross-encoder model load.
+
+### Streamlit UI (Optional)
+
+```bash
+streamlit run streamlit_app.py
+```
+
+UI: `http://127.0.0.1:8501`
+
+The Streamlit client sends queries to the FastAPI `/chat` endpoint and displays natural-language responses.
 
 ---
 
@@ -230,7 +262,7 @@ First startup takes ~5-10s for cross-encoder model load.
 }
 ```
 
-Returns structured JSON:
+Returns structured JSON with `response_text` (natural-language):
 
 ```json
 {
@@ -249,6 +281,7 @@ Returns structured JSON:
       ]
     },
     "summary": "get_stock_levels: found 1 record",
+    "response_text": "HSN 48211090 ke liye stock mil gaya: Office Products 48211090 @ 18 jiska closing quantity -43 hai.",
     "errors": []
   }
 }
@@ -256,7 +289,7 @@ Returns structured JSON:
 
 ### POST /chat-text
 
-Same input, returns plain text response.
+Same input, returns plain text response (the `response_text` field).
 
 ---
 
@@ -272,6 +305,7 @@ Same input, returns plain text response.
 {"query": "Show TDS outstanding and TCS outstanding from 2024-04-01 to 2024-12-31"}
 {"query": "negative closing quantity wale products dikhao"}
 {"query": "sirf closing quantity batao"}
+{"query": "humne abhi tak kya poocha hai?"}
 ```
 
 ---
@@ -288,8 +322,9 @@ Typical local timings (qwen3:8b on RTX 3070):
 | chat_model_node | ~3.5s |
 | tools_node (1 call) | ~0.5s |
 | deterministic_final | <5ms |
-| **Total single-tool (cold)** | **~12s** |
-| **Total single-tool (warm)** | **~6-7s** |
+| response_generation | ~1.5s |
+| **Total single-tool (cold)** | **~14s** |
+| **Total single-tool (warm)** | **~8-9s** |
 
 ---
 
@@ -308,6 +343,37 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 ## Bug Tracker
 
 See [bug_solver.md](./bug_solver.md) for known bugs and planned improvements.
+
+---
+
+## Recent Updates (2026-06-04)
+
+**Critical (P0):**
+- **Summarization 40s blowup** — stripped `raw_response` from ToolMessage content before summary LLM input (dropped latency to ~1.3s)
+- **Meta-question hallucination** — `semantic_search` detects conversational queries ("what did we ask?") and returns empty `selected_tools` instead of random tool picks
+- **Tool call ID collision** — added `uuid.uuid4().hex[:12]` suffix to `call_{name}` IDs, preventing LangGraph silent dedup across turns
+- **Missing import crash** — replaced `await format_response_as_chat_text` (never imported) with inline text fallback in `response_generation_node`
+- **Cross-query data leak** — scoped ToolMessage content to current turn's `tool_call_ids` in `deterministic_final_node`
+
+**High (P1):**
+- Summary changed from APPEND to regenerate-from-scratch, eliminating accumulated hallucinations
+- Sort key `TypeError` risk fixed with `_sort_key` helper (`float('-inf')` fallback)
+- `fields` dict mutation fixed (`{**fields, "isLowStock": True}` instead of in-place assignment)
+- Silent filter drop fixed — `apply_filters` validates field names upfront, returns empty with `[WARN]` log
+- Node crash no longer corrupts state — exception handler merges into `dict(state)` instead of replacing all state
+- `match_filter` substring false positives removed — substring fallback deleted
+
+**Medium (P2):**
+- Auth token reverted to hardcoded `"ROHANVAJA007"` for testing (was broken by env var import)
+- Cache clock fixed — `time.time()` → `time.monotonic()` in `cached_api_post`
+- Tool timing lost fixed — `timed_node` handles `list` return from `ToolNode`
+- Comma-search crash fixed — blanket `"," in search` replaced with `re.search(r'\w+,\s*\w+', search)`
+- Hinglish detection gap closed — fallback checks query words when translator says English
+- Tool name alias spaces fixed — `normalize_tool_name` converts spaces to underscores before alias lookup
+- Missing `import re` added to `tools_api.py`
+- Conversation memory routing — `memory_answer` path routes directly to `response_generation` node, skipping tools
+
+**Files affected:** `src/nodes.py`, `src/tools_api.py`, `src/graph.py`, `src/api_client.py`
 
 ---
 

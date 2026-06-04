@@ -74,6 +74,16 @@ hinglish:
     - kitni
     - yaha
     - vaha
+    - jiska
+    - jiski
+    - jiske
+    - kyu
+    - kyun
+    - ho
+    - kitne
+    - hamare
+    - hamara
+    - hamari
 
   multilingual_words:
     - ka
@@ -120,6 +130,15 @@ hinglish:
     - chaia
     - chahiye
     - chaiye
+    - jiski
+    - jiske
+    - kyu
+    - kyun
+    - ho
+    - kitne
+    - hamare
+    - hamara
+    - hamari
 
 route_keywords:
   - customer

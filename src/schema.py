@@ -28,7 +28,10 @@ class MainState(TypedDict):
     skip_router: bool
     unsupported_parts: list[str]
     summary:str #Summary of the conversation so far, to be prepended to the prompt in each loop iteration. Updated after each iteration with the latest summary from the LLM.
-    # conversation_summary: str #Conversation's summary
+    response_text: str
+    last_tool_call: dict  # persists last tool call per tool name across summarization
+    conversation_context: dict  # persists entity references (customers, products, etc.) across summarization
+    memory_answer: str  # stores memory-only query answer so routing can continue to response_generation
     
 class OutputState(TypedDict):
     final_response: str

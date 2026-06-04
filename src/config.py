@@ -5,14 +5,24 @@ import os
 import yaml
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 
+
 embedding_model = OllamaEmbeddings(model="bge-m3")
 
+# normalizer_llm = ChatOllama(
+#     model="qwen3:latest",
+#     temperature=0.0,
+#     keep_alive="30m",
+#     num_ctx=1024,
+#     num_predict=512,
+#     reasoning=False,
+# )
+
 normalizer_llm = ChatOllama(
-    model="qwen3:latest",
+    model="qwen3:4b",
     temperature=0.0,
     keep_alive="30m",
     num_ctx=1024,
-    num_predict=512,
+    num_predict=128,
     reasoning=False,
 )
 llm = ChatOllama(

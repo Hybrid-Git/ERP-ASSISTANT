@@ -8,6 +8,7 @@ from src.nodes import (
     deterministic_final_node,
     translator_node,
     summarization_node,
+    response_generation_node
 )
 import time
 import inspect
@@ -31,6 +32,9 @@ def timed_node(node_name: str, node_func):
             if result is None:
                 result = {}
 
+            if isinstance(result, list):
+                result = {"messages": result}
+
             if isinstance(result, dict):
                 result["step_timings"] = [
                     {
@@ -43,17 +47,15 @@ def timed_node(node_name: str, node_func):
 
         except Exception as e:
             duration = time.perf_counter() - start
-            print(f"[TIMING] {node_name} failed after {duration:.3f}s")
+            print(f"[NODE ERROR] {node_name} failed after {duration:.3f}s: {e}")
 
-            return {
-                "step_timings": [
-                    {
-                        "node": node_name,
-                        "duration_sec": round(duration, 3),
-                        "error": str(e),
-                    }
-                ]
-            }
+            result = dict(state)
+            result["step_timings"] = state.get("step_timings", []) + [{
+                "node": node_name,
+                "duration_sec": round(duration, 3),
+                "error": str(e),
+            }]
+            return result
 
     return wrapper
 
@@ -70,6 +72,7 @@ def graph_builder():
 
         builder.add_node("translator", timed_node("translator", translator_node))
         builder.add_node("semantic_search", timed_node("semantic_search", semantic_search))
+        builder.add_node("response_generation", timed_node("response_generation", response_generation_node))
         builder.add_node("chat_model", timed_node("chat_model", chat_model_node))
         builder.add_node("tools", timed_node("tools", tools_node))
         builder.add_node(
@@ -89,12 +92,14 @@ def graph_builder():
             routing_node,
             {
                 "tools": "tools",
+                "response_generation": "response_generation",
                 "__end__": END,
             },
         )
 
         builder.add_edge("tools", "deterministic_final")
-        builder.add_edge("deterministic_final", "summarization")
+        builder.add_edge("deterministic_final", "response_generation")
+        builder.add_edge("response_generation", "summarization")
         builder.add_edge("summarization", END)
 
         memory = MemorySaver()

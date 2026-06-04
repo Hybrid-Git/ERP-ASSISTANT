@@ -1,11 +1,12 @@
 from langchain.tools import tool
 import json
+import re
 from typing import Optional, Any
 from src.api_client import api_post
 from src.config import COMPANY_ID
 import time
 import copy
-
+from collections import OrderedDict
 
 CUSTOMER_ENDPOINT = "/customers"
 CUSTOMER_LEDGER_ENDPOINT = "/customers/ledger"
@@ -14,8 +15,9 @@ GST_SUMMARY_ENDPOINT = "/reports/gst-summary"
 TDS_OUTSTANDING_ENDPOINT = "/reports/tds-outstanding"
 TCS_OUTSTANDING_ENDPOINT = "/reports/tcs-outstanding"
 
+api_cache_maxsize = 100  # Max number of cached entries
 api_cache_ttl_secs = 600  # 10 minutes
-api_cache = {}
+api_cache = OrderedDict()  # Cache dict to store API responses with insertion order
 
 
 def make_cache_key(endpoint: str, body: dict) -> str:
@@ -29,7 +31,7 @@ def cached_api_post(endpoint: str, body: dict) -> dict:
     """
 
     cache_key = make_cache_key(endpoint, body)
-    now = time.time()
+    now = time.monotonic()
 
     cached = api_cache.get(cache_key)
 
@@ -51,7 +53,8 @@ def cached_api_post(endpoint: str, body: dict) -> dict:
         "cached_at": now,
         "result": copy.deepcopy(result),
     }
-
+    while len(api_cache) > api_cache_maxsize:
+        api_cache.popitem(last=False)
     return copy.deepcopy(result)
 
 def normalize_fields(fields):
@@ -157,7 +160,8 @@ def match_filter(actual, expected):
     except (ValueError, TypeError):
         pass
 
-    return exp_str == act_str or (exp_str and exp_str in act_str)
+    # return exp_str == act_str or (exp_str and exp_str in act_str)
+    return exp_str == act_str
 
 
 def apply_filters(records, filters=None):
@@ -168,6 +172,17 @@ def apply_filters(records, filters=None):
     for record in records:
         if isinstance(record, dict):
             record_fields.update(record.keys())
+
+    # Check for invented filter fields that match no record data
+    invented_fields = []
+    for field in filters:
+        if "." in field or " " in field or any(op in field for op in ["$", ">", "<", "="]):
+            continue
+        if record_fields and field not in record_fields:
+            invented_fields.append(field)
+    if invented_fields and record_fields:
+        print(f"[WARN] Filter fields not found in records — returning empty: {invented_fields}")
+        return []
 
     filtered_records = []
 
@@ -181,11 +196,6 @@ def apply_filters(records, filters=None):
             # Skip operator-style filter keys (e.g., "name.contains", "closingQty gt").
             # These are LLM-generated filters meant for the API, not for local matching.
             if "." in field or " " in field or any(op in field for op in ["$", ">", "<", "="]):
-                continue
-
-            # Skip filter keys that don't exist as fields in any record.
-            # These are API-level parameters (e.g. "order_by"), not local filters.
-            if record_fields and field not in record_fields:
                 continue
 
             actual = record.get(field)
@@ -230,7 +240,16 @@ def project_fields(records, fields=None):
     # (e.g. LLM asked for "customer_id" but API field is "id"),
     # return original records instead of silently returning empty data.
     if not projected_records and records:
-        return records
+        # Check if the requested fields actually exist in any record
+        actual_fields = set()
+        for r in records:
+            if isinstance(r, dict):
+                actual_fields.update(r.keys())
+        if not any(f in actual_fields for f in selected_fields):
+            # LLM invented field names — return full records instead of empty
+            return records
+        return []
+
 
     return projected_records
 
@@ -467,8 +486,9 @@ def get_customer(
         stripped = search.strip().lower()
         # 1. Fetch-all keywords → empty search
         non_specific = {"all", "all customers", "all parties", "all ledgers", "everyone", "every customer"}
-        # 2. Comma-separated list (e.g. "kolkata,punjab,bangalore") → not a real name
-        if stripped in non_specific or "," in search:
+        # 2. Comma-separated list of names (e.g. "kolkata, punjab, bangalore") → not a real name
+        comma_separated_names = bool(re.search(r'\w+,\s*\w+', search))
+        if stripped in non_specific or comma_separated_names:
             search = ""
 
     body = {
@@ -606,13 +626,20 @@ def get_stock_levels(
     """
 
     needs_local_sort = bool(sort_field) and sort_field != "name"
+    if needs_local_sort:
+        needed = page * limit
+        fetch_limit = min(max(needed, 200), 1000)
+        fetch_page = 1
+    else:
+        fetch_limit = limit
+        fetch_page = page
     body = {
         "companyId": COMPANY_ID,
         "from": from_date or "",
         "to": to_date or "",
         "lowStockOnly": low_stock_only,
-        "page": 1 if needs_local_sort else page,
-        "limit": 200 if needs_local_sort else limit,
+        "page": fetch_page,
+        "limit": fetch_limit,
         "term": term or "",
     }
 
@@ -620,12 +647,23 @@ def get_stock_levels(
         body["filters"] = filters
 
     result = cached_api_post(STOCK_LEVELS_ENDPOINT, body=body)
+
+    raw_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
+    print(f"[STOCK DEBUG] After cached_api_post: raw_data_len={raw_len}, fields={fields}")
+
     if low_stock_only and fields is not None:
         if isinstance(fields, list) and "isLowStock" not in fields:
             fields = fields + ["isLowStock"]
         elif isinstance(fields, dict):
-            fields["isLowStock"] = True
+            fields = {**fields, "isLowStock": True}
     result = project_result(result, fields=fields, filters=filters)
+    projected_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
+    print(f"[STOCK DEBUG] After project_result: data_len={projected_len}, count={result.get('count')}")
+
+    # Preserve total_rows from raw response so count/aggregate queries still work
+    raw = result.get("raw_response", {})
+    if isinstance(raw, dict) and "total_rows" in raw:
+        result["total_rows"] = raw["total_rows"]
     if low_stock_only and result.get("success"):
         records = result.get("data", [])
 
@@ -638,16 +676,27 @@ def get_stock_levels(
         result["count"] = len(records)
 
     records = result.get("data", [])
-    if needs_local_sort and records:
-        reverse = (sort_order or "asc").lower() == "desc"
-        records = sorted(
+    if needs_local_sort and isinstance(result.get("data"), list):
+
+        def _sort_key(r):
+            val = r.get(sort_field)
+            if val is None:
+                return (1, float('-inf'))
+            try:
+                return (0, float(val))
+            except (TypeError, ValueError):
+                return (0, 0)
+
+        sorted_data = sorted(
             records,
-            key=lambda r: _safe_sort_key(r, sort_field),
-            reverse=reverse,
+            key=_sort_key,
+            reverse=(sort_order or "").lower() == "desc",
         )
-        records = records[:limit]
-        result["data"] = records
-        result["count"] = len(records)
+        start = (page - 1) * limit
+        end = start + limit
+        result["data"] = sorted_data[start:end]
+        result["count"] = len(result["data"])
+        print(f"[STOCK DEBUG] After local sort: data_len={len(result['data'])}, count={result['count']}, sort_field={sort_field}, sort_order={sort_order}, limit={limit}")
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)

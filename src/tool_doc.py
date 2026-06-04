@@ -106,7 +106,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "stock",
         "multi_call_ok": True,
         "description": "Fetch stock and inventory levels using product name, SKU or HSN; returns closing quantity/value, low stock and out-of-stock details.",
-        "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt.",
+            "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt. Can call w/ sort descending for max, ascending for min.",
         "aliases": [
             "stock", "inventory", "product", "products", "item", "items",
             "maal", "jaththo", "satha", "stock_levels", "stock_report",
@@ -136,7 +136,7 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "hsn_extract": True,
             "default_fields": ["name"],
-            "field_triggers": {"value": "closingValue"},
+            "field_triggers": {"value": "closingValue", "quantity": "closingQty", "qty": "closingQty"},
             "param_aliases": {"name": "term"},
             "low_stock_only_keywords": ["low stock", "out of stock", "out-of-stock", "stock out", "low inventory"],
         },

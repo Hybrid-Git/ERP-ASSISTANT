@@ -10,3 +10,5 @@ prompt.txt*.pyc
 CHANGES.md
 ARCHITECTURE.md
 DIFF.md
+changes.md
+bug_solver.md

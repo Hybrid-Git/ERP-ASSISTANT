@@ -9,7 +9,7 @@ import asyncio
 import copy
 import uuid
 from typing import Any, Dict, List, Optional
-
+from collections import OrderedDict
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -18,7 +18,7 @@ from langchain_core.messages import RemoveMessage,SystemMessage, HumanMessage
 
 from src.graph import graph_builder
 from src.config import llm, normalizer_llm, get_cfg
-
+from src.nodes import ensure_cross_encoder
 
 app = FastAPI(
     title="CHAPTER-1-ASSIST",
@@ -31,12 +31,14 @@ GRAPH_TIMEOUT_SECONDS = 300
 # ==============================
 # FINAL RESPONSE CACHE & SESSION STORAGE
 # ==============================
-FINAL_RESPONSE_CACHE = {}
+FINAL_RESPONSE_CACHE = OrderedDict()  # Cache for final API responses keyed by normalized user query
+FINAL_RESPONSE_CACHE_MAXSIZE = 500  # Max number of cached entries
 FINAL_RESPONSE_CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # Server-side session memory.
 # This now stores only messages. No rolling summary is stored.
-SESSION_MEMORY = {}
+SESSION_MEMORY = OrderedDict()  # session_id -> {"messages": [...], "summary": "..."}
+SESSION_MEMORY_MAXSIZE = 1000  # Max number of sessions to store in memory
 
 
 def normalize_query_for_cache(query: str) -> str:
@@ -108,6 +110,8 @@ def set_cached_final_response(query: str, result: dict):
         "cached_at": time.time(),
         "result": copy.deepcopy(cacheable_result),
     }
+    while len(FINAL_RESPONSE_CACHE) > FINAL_RESPONSE_CACHE_MAXSIZE:
+        FINAL_RESPONSE_CACHE.popitem(last=False)
     print(f"[FINAL CACHE SET] {key}")
 
 
@@ -248,6 +252,7 @@ async def run_graph_query(
     config["configurable"] = {"thread_id": session_id}
     try:
         summary_tracker = past_summary or ""
+        response_text = None
         async with asyncio.timeout(GRAPH_TIMEOUT_SECONDS):
             async for chunks in graph.astream(
                 initial_state,
@@ -293,21 +298,25 @@ async def run_graph_query(
                                     tools_requested.append(tool_name)
                             continue
 
-                        content = getattr(last_message, "content", None)
-                        if content:
-                            content_lower = content.lower()
-                            status_type = (
-                                "needs_clarification"
-                                if "specify" in content_lower or "please tell me" in content_lower
-                                else "unsupported"
-                            )
-                            final_response = make_error_response(
-                                user_query=user_query,
-                                status=status_type,
-                                summary=content,
-                                errors=[],
-                                tools_used=tools_requested,
-                            )
+                        memory_answer = state_update.get("memory_answer", "")
+                        if memory_answer:
+                            print("Memory answer detected — not treating as error.")
+                        else:
+                            content = getattr(last_message, "content", None)
+                            if content:
+                                content_lower = content.lower()
+                                status_type = (
+                                    "needs_clarification"
+                                    if "specify" in content_lower or "please tell me" in content_lower
+                                    else "unsupported"
+                                )
+                                final_response = make_error_response(
+                                    user_query=user_query,
+                                    status=status_type,
+                                    summary=content,
+                                    errors=[],
+                                    tools_used=tools_requested,
+                                )
 
                     if node_name == "deterministic_final":
                         final_response_raw = state_update.get("final_response")
@@ -323,6 +332,10 @@ async def run_graph_query(
                                 errors=["No final_response dict found in deterministic_final node output."],
                                 tools_used=tools_utilized,
                             )
+                    if node_name == "response_generation":
+                        new_text = state_update.get("response_text")
+                        if new_text:
+                            response_text = new_text
 
     except TimeoutError:
         total_time = round(time.perf_counter() - start_time, 3)
@@ -368,7 +381,9 @@ async def run_graph_query(
         )
 
     result = {
-        "response": final_response,
+        "response": response_text if response_text else final_response,
+        "response_text": response_text,
+        "data":final_response.get("data", {}) if isinstance(final_response, dict) else {},
         "timings": timings,
         "total_time_sec": total_time,
         "updated_messages": messages_tracker,
@@ -384,8 +399,12 @@ async def startup_event():
     try:
         print("FastAPI started. Graph already built. Warming up worker LLM...")
         start = time.perf_counter()
-        await llm.ainvoke("Return only: OK")
-        print(f"Worker LLM warmup completed in {round(time.perf_counter() - start, 3)}s")
+        await llm.ainvoke([SystemMessage(content="Return only: OK"),
+                           HumanMessage(content="ping")])
+        elapsed_time = time.perf_counter() - start
+        print(f"Worker LLM warmup completed in {round(elapsed_time, 3)}s")
+        ensure_cross_encoder()
+        print("Cross-encoder model loaded successfully during startup.")
     except Exception as e:
         print("Worker LLM warmup failed:", e)
 
@@ -423,15 +442,15 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
             "messages": result.get("updated_messages", []),
             "summary": result.get("summary","")
         }
+        while len(SESSION_MEMORY) > SESSION_MEMORY_MAXSIZE:
+            SESSION_MEMORY.popitem(last=False)
 
         output_format = fmt or DEFAULT_OUTPUT_FORMAT
 
         if output_format == "text":
-            text = await format_response_as_chat_text(
-                response_data=result["response"],
-                timings=result.get("timings", []),
-                total_time=result.get("total_time_sec", 0.0),
-            )
+            text = result.get("response_text") or result.get("response")
+            if not isinstance(text, str):
+                text = await format_response_as_chat_text(text)
             return PlainTextResponse(text)
 
         return result
@@ -476,12 +495,12 @@ async def chat_text(request: ChatRequest):
             "messages": result.get("updated_messages", []),
             "summary": result.get("summary","")
         }
+        while len(SESSION_MEMORY) > SESSION_MEMORY_MAXSIZE:
+            SESSION_MEMORY.popitem(last=False)
 
-        text = await format_response_as_chat_text(
-            response_data=result["response"],
-            timings=result.get("timings", []),
-            total_time=result.get("total_time_sec", 0.0),
-        )
+        text = result.get("response_text") or result.get("response")
+        if not isinstance(text, str):
+            text = await format_response_as_chat_text(text)
         return PlainTextResponse(text)
 
     except Exception as e:
