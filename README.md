@@ -319,7 +319,7 @@ streamlit run streamlit_app.py
 
 UI: `http://127.0.0.1:8501`
 
-The Streamlit client sends queries to the FastAPI `/chat` endpoint and displays natural-language responses with expandable tool data tables.
+The Streamlit client sends queries to the FastAPI `/chat/stream` endpoint and displays token-by-token streaming responses with expandable tool data tables.
 
 ### Quick Test
 
@@ -371,6 +371,29 @@ Returns structured JSON with `response_text` (natural-language):
   }
 }
 ```
+
+### POST /chat/stream
+
+Same input as `/chat`. Returns a Server-Sent Events (SSE) stream with three event types:
+
+```
+data: {"token": "Here"}           # individual response tokens (streamed live)
+data: {"token": " are"}
+data: {"token": " the"}
+...
+data: {"data": {"get_customer": [...]}}   # tool data records (final)
+data: {"session_id": "abc123", "done": true}  # completion signal
+```
+
+Consume with any SSE client. Example with `curl`:
+
+```bash
+curl -s -N http://127.0.0.1:8000/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "list customers"}'
+```
+
+For Streamlit, use `st.write_stream()` with the generator in `streamlit_app.py`.
 
 ### POST /chat-text
 
@@ -456,6 +479,11 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 
 ## Recent Updates (2026-06-05)
 
+**Streaming Responses:**
+- **`/chat/stream` SSE endpoint** (`fast_main.py:483-589`) — new POST endpoint that streams tokens via `astream_events()` filtered by `response_stream` tag. Yields `token` events for each LLM chunk, `data` events for tool records, and a final `session_id`/`done` event. Greeting/unsupported paths emit the full response as a single token when no LLM call occurred.
+- **Streamlit streaming UI** (`streamlit_app.py:51-71`) — `chat_stream()` generator reads SSE stream and yields tokens for `st.write_stream()`. Captures tool data and session_id from stream events. Old `send_query()` removed.
+- **`response_generation_node` astream fix** (`src/nodes.py:2422-2429`) — `summary_llm.astream()` was incorrectly awaited and treated as a single message; now correctly iterates over async chunks and accumulates the full response.
+
 **Greeting Detection & Out-of-Context Handling:**
 - **Greeting detection** (`src/nodes.py:456-476`) — `semantic_search_node` recognizes pure greetings (hello, hi, hey, namaste, good morning, how are you, kaise ho, etc.) via regex patterns and returns a welcome `memory_answer` immediately, bypassing all LLM calls and tool matching.
 - **Out-of-context refusal** (`src/nodes.py:542`) — unsupported non-ERP queries now receive a clear message: *"I am an ERP assistant and can only help with questions about customers, stock/inventory, GST summaries, TDS reports, and TCS reports."*
@@ -463,7 +491,6 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 
 **Fixes & Improvements:**
 - **`api_client.py` renamed to `api.py`** — cleaner naming; import updated in `tools_api.py`.
-- **`response_generation_node` astream fix** (`src/nodes.py:2422-2429`) — `summary_llm.astream()` was incorrectly awaited and treated as a single message; now correctly iterates over async chunks and accumulates the full response.
 
 ## Previous Updates (2026-06-05)
 

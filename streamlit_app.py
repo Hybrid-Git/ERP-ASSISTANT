@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-
+import json
 API_BASE = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Chapter1 ERP Assistant", page_icon="💼", layout="wide")
@@ -48,21 +48,27 @@ def fetch_history(session_id):
         return []
 
 
-def send_query(session_id, query):
-    try:
-        resp = requests.post(
-            f"{API_BASE}/chat?format=json",
-            json={"query": query, "session_id": session_id},
-            timeout=300,
-        )
-        data = resp.json()
-        text = data.get("response_text") or (
-            data.get("response", {}).get("summary", str(data))
-        )
-        data_dict = data.get("data", {})
-        return text, data_dict, data.get("session_id", session_id)
-    except Exception as e:
-        return f"Error: {e}", {}, session_id
+def chat_stream(session_id, query):
+    resp = requests.post(
+        f"{API_BASE}/chat/stream",
+        json={"query": query, "session_id": session_id},
+        stream=True, timeout=600,
+    )
+    collected_data = {}
+    actual_sid = session_id
+    for line in resp.iter_lines(decode_unicode=True):
+        if line.startswith("data: "):
+            payload = json.loads(line[6:])
+            if "token" in payload:
+                yield payload["token"]
+            elif "data" in payload:
+                collected_data.update(payload["data"])
+            elif "session_id" in payload:
+                actual_sid = payload["session_id"]
+            elif payload.get("done"):
+                break
+    st.session_state._stream_data = collected_data
+    st.session_state._stream_session_id = actual_sid
 
 
 def render_records(data_dict):
@@ -198,15 +204,16 @@ if prompt := st.chat_input("Ask about customers, stock, GST..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            text, data_dict, actual_session_id = send_query(session_id, prompt)
-
-        st.markdown(text)
+            text = st.write_stream(chat_stream(session_id, prompt))
+        data_dict = st.session_state.pop("_stream_data", {})
+        actual_session_id = st.session_state.pop("_stream_session_id", session_id)
         render_records(data_dict)
-        st.session_state.messages.append({"role": "assistant", "content": text, "data": data_dict})
 
-        # If the server returned a different session_id (auto-created), update it
-        if actual_session_id != session_id:
-            st.session_state.active_session_id = actual_session_id
-            st.query_params["session_id"] = actual_session_id
+    st.session_state.messages.append({"role": "assistant", "content": text, "data": data_dict})
 
-        st.rerun()
+    # If the server returned a different session_id (auto-created), update it
+    if actual_session_id != session_id:
+        st.session_state.active_session_id = actual_session_id
+        st.query_params["session_id"] = actual_session_id
+
+    st.rerun()

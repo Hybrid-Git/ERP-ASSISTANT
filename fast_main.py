@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional
 from collections import OrderedDict
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from langchain_core.messages import RemoveMessage, SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import RemoveMessage, SystemMessage, HumanMessage, AIMessage, AIMessageChunk
 
 from src.graph import graph_builder
 from src.config import llm, normalizer_llm, get_cfg
@@ -478,6 +478,115 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
                 errors=[str(e)],
             ),
         )
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    request_id = str(uuid.uuid4())
+    session_id = request.session_id or "default_session"
+
+    session = session_store.get_session(session_id)
+    if session is None:
+        session = session_store.create_session(session_id=session_id)
+        print(f"[SESSION] Auto-created session: {session_id}")
+
+    past_messages = session_store.load_messages(session_id)
+    past_summary = (session or {}).get("summary", "")
+
+    langsmith_config = {
+        "run_name": "CHAPTER1_ASSIST_CHAT_STREAM",
+        "tags": ["fastapi", "langgraph", "erp-assistant", "stream"],
+        "metadata": {
+            "request_id": request_id,
+            "query": request.query,
+            "session_id": session_id,
+        },
+    }
+
+    initial_state = {
+        "user_query": request.query,
+        "canonical_query": "",
+        "translator_used": False,
+        "translator_confidence": "",
+        "detected_language": "",
+        "messages": past_messages or [],
+        "retrieved_tools": [],
+        "selected_tools": [],
+        "query_parts": [],
+        "router_decision": {},
+        "skip_router": False,
+        "loop_count": 0,
+        "final_response": "",
+        "tools_utilized": [],
+        "step_timings": [],
+        "document_type": "",
+        "unsupported_parts": [],
+        "summary": past_summary or "",
+    }
+
+    config = {
+        **langsmith_config,
+        "configurable": {"thread_id": session_id},
+    }
+
+    async def event_generator():
+        messages_tracker = list(past_messages)
+        summary_tracker = past_summary or ""
+        response_text = None
+        stream_data = {}
+        tokens_emitted = False
+
+        try:
+            async with asyncio.timeout(GRAPH_TIMEOUT_SECONDS):
+                async for event in graph.astream_events(
+                    initial_state,
+                    config=config,
+                    version="v2",
+                ):
+                    kind = event["event"]
+                    tags = event.get("tags", [])
+
+                    if kind == "on_chat_model_stream" and "response_stream" in tags:
+                        chunk = event["data"]["chunk"]
+                        if isinstance(chunk, AIMessageChunk) and chunk.content:
+                            tokens_emitted = True
+                            yield f"data: {json.dumps({'token': chunk.content})}\n\n"
+
+                    elif kind == "on_chain_end":
+                        name = event.get("name", "")
+                        output = event["data"].get("output", {})
+                        if isinstance(output, dict):
+                            if "response_text" in output and output["response_text"]:
+                                response_text = output["response_text"]
+                            if "messages" in output:
+                                for msg in output["messages"]:
+                                    if isinstance(msg, RemoveMessage):
+                                        messages_tracker = [m for m in messages_tracker if m.id != msg.id]
+                                    elif msg not in messages_tracker:
+                                        messages_tracker.append(msg)
+                            if "summary" in output and output["summary"]:
+                                summary_tracker = output["summary"]
+                            if "final_response" in output and isinstance(output["final_response"], dict):
+                                d = output["final_response"].get("data", {})
+                                if d:
+                                    stream_data = d
+        except TimeoutError:
+            yield f"data: {json.dumps({'error': 'Request timed out'})}\n\n"
+        except Exception as e:
+            print(f"Stream error: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        if response_text:
+            if not tokens_emitted:
+                yield f"data: {json.dumps({'token': response_text})}\n\n"
+            updated = list(messages_tracker)
+            updated.append(AIMessage(content=response_text))
+            session_store.save_session(session_id, updated, summary_tracker)
+
+        yield f"data: {json.dumps({'data': stream_data})}\n\n"
+        yield f"data: {json.dumps({'session_id': session_id, 'done': True})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/chat-text")
