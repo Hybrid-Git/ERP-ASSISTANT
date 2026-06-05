@@ -2356,10 +2356,31 @@ async def response_generation_node(state: MainState):
         "4. Do NOT use headers like '--- Customers ---' or '--- Results ---' or any section labels.\n"
         "5. Do NOT use bullet points or numbered lists unless the user explicitly asked for a list.\n"
         "6. Keep the reply to 1-4 short sentences.\n"
+        "7. If the TOOL RESULTS contain a '__note' saying records are hidden."
+        "you do NOT have access to change those records. DO NOT guess or invent them."
+        "Tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
     )
+
+    # Truncate large tool results to avoid overwhelming the LLM's context window
+    MAX_SAMPLE_RECORDS = 50
+    final_response_prompt = dict(final_response)
+    data = final_response_prompt.get("data", {})
+    if isinstance(data, dict):
+        truncated_data = {}
+        for tool_name, records in data.items():
+            if isinstance(records, list) and len(records) > MAX_SAMPLE_RECORDS:
+                truncated_data[tool_name] = records[:MAX_SAMPLE_RECORDS]
+                extra = len(records) - MAX_SAMPLE_RECORDS
+                truncated_data[tool_name].append({
+                    "__note": f"Showing {MAX_SAMPLE_RECORDS} of {len(records)} records. {extra} more records not shown."
+                })
+            else:
+                truncated_data[tool_name] = records
+        final_response_prompt["data"] = truncated_data
+
     human_prompt = (
         f"USER QUERY:\n{original_query}\n\n"
-        f"TOOL RESULTS (JSON):\n{json.dumps(final_response, indent=2, ensure_ascii=False)}\n\n"
+        f"TOOL RESULTS (JSON):\n{json.dumps(final_response_prompt, indent=2, ensure_ascii=False)}\n\n"
         f"Summary : {final_response.get('summary','')}\n\n"
     )
 

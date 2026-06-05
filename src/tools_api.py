@@ -389,7 +389,7 @@ def get_gst_summary(
 
     result = cached_api_post(GST_SUMMARY_ENDPOINT, body=body)
     result = flatten_gst_summary_result(result)
-    result = project_result(result, fields=fields, filters=filters)
+    result = project_result(result, fields=fields, filters=None)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -421,7 +421,7 @@ def get_tds_outstanding(
 
     result = cached_api_post(TDS_OUTSTANDING_ENDPOINT, body=body)
     result = append_report_summary_row(result, "tdsOutstanding")
-    result = project_result(result, fields=fields, filters=filters)
+    result = project_result(result, fields=fields, filters=None)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -452,7 +452,7 @@ def get_tcs_outstanding(
 
     result = cached_api_post(TCS_OUTSTANDING_ENDPOINT, body=body)
     result = append_report_summary_row(result, "tcsOutstanding")
-    result = project_result(result, fields=fields, filters=filters)
+    result = project_result(result, fields=fields, filters=None)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -501,7 +501,7 @@ def get_customer(
         body["filters"] = filters
 
     result = cached_api_post(CUSTOMER_ENDPOINT, body=body)
-    result = project_result(result, fields=fields, filters=filters)
+    result = project_result(result, fields=fields, filters=None)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -566,7 +566,6 @@ def get_customer_ledger(
     ledger_record.setdefault("period", raw.get("period"))
 
     records = [ledger_record]
-    records = apply_filters(records, filters)
     records = project_fields(records, fields)
 
     final_result = {
@@ -656,7 +655,7 @@ def get_stock_levels(
             fields = fields + ["isLowStock"]
         elif isinstance(fields, dict):
             fields = {**fields, "isLowStock": True}
-    result = project_result(result, fields=fields, filters=filters)
+    result = project_result(result, fields=fields, filters=None)
     projected_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
     print(f"[STOCK DEBUG] After project_result: data_len={projected_len}, count={result.get('count')}")
 

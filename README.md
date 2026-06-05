@@ -19,6 +19,8 @@ Chapter1-Assist connects to the Chapter-1 ERP backend and answers natural langua
 
 The system uses three local LLMs: a small translator (4B, 1024 ctx) for optional Hinglish→English normalization, a full-size worker (8B, 8192 ctx) for tool-call generation, and a summary LLM (8B, 8192 ctx) for natural-language responses and conversation summarization. No external API costs.
 
+Sessions are stored in-memory (dict + threading.Lock) and do NOT survive a server restart. The in-memory store replaced an earlier SQLite-backed implementation for simplicity — no file I/O, no schema migrations, but sessions are lost on crash or restart. Switch to SQLite if you need persistent "time travel" across restarts.
+
 ---
 
 ## Architecture
@@ -157,6 +159,8 @@ Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts loc
 
 | Component | Technology |
 |---|---|
+| Component | Technology |
+|---|---|---|
 | Framework | FastAPI |
 | Graph Engine | LangGraph |
 | Worker LLM | `qwen3:latest` (8B) via Ollama (`reasoning=False`, `num_ctx=8192`) |
@@ -166,6 +170,7 @@ Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts loc
 | Cross-encoder reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
 | Backend | Chapter-1 ERP API |
 | HTTP client | `requests` (sync) |
+| Session Store | In-memory dict + threading.Lock (lost on restart) |
 | UI (optional) | Streamlit |
 
 ---
@@ -176,10 +181,10 @@ Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts loc
 CHAPTER1-ASSIST/
 ├── fast_main.py              # FastAPI entry point, cache, session management, response formatting
 ├── streamlit_app.py          # Streamlit chat UI (optional client)
+├── session_store.py          # In-memory session CRUD (dict + threading.Lock)
 ├── config.yaml               # Pipeline config (cities, thresholds, keywords, field names)
 ├── requirements.txt          # Python dependencies
 ├── .env                      # Environment variables (not committed)
-├── bug_solver.md             # Known bugs and upcoming implementation plan
 │
 ├── src/
 │   ├── config.py             # LLM setup, API env vars, YAML config loader
@@ -340,13 +345,31 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 
 ---
 
-## Bug Tracker
+## Known Bugs & Limitations
 
-See [bug_solver.md](./bug_solver.md) for known bugs and planned improvements.
+- **API pagination** — `get_stock_levels` defaults to `limit=10`, so count queries may see only 10 records despite `total_rows` indicating hundreds or thousands. Fix: increase limit or paginate in the tool.
+- **In-memory sessions** — sessions are lost on server restart. Switch to SQLite (`pip install aiosqlite`) and re-implement `session_store.py` with a persistent backend for "time travel" across restarts.
+- **Summarization trim** — after 6+ human messages, old context is summarized via LLM; summary quality depends on the 8B model.
 
 ---
 
-## Recent Updates (2026-06-04)
+## Recent Updates (2026-06-05)
+
+**Session Persistence:**
+- **Replaced SQLite with in-memory store** (`session_store.py`) — sessions stored in `dict` + `threading.Lock`. No file I/O, no schema migrations, simplifies deployment. Sessions are lost on restart — switch back to SQLite if persistence is needed.
+- **History display fix** (`fast_main.py`) — appends `AIMessage(content=response_text)` before `save_session` so the conversation response appears correctly in history. History endpoint filters out tool/empty-content messages.
+- **In-memory session CRUD** — `init_db` is a no-op; `create_session`, `get_session`, `save_session`, `delete_session`, `rename_session`, `load_messages`, `list_sessions` all operate on the in-memory dict.
+
+**Tool & Response Fixes:**
+- **Client-side filter bug** (`tools_api.py`) — all 6 tools previously re-applied filters on project_result output after the API already filtered. Removed re-application; API response is authoritative.
+- **Response truncation fix** (`nodes.py`) — `MAX_SAMPLE_RECORDS` raised from 10 → 50, so the LLM sees more records before generating a response. Added anti-hallucination rule 7: *"If truncated data is shown with a `__note`, do not claim you have shown all records."*
+- **API pagination awareness** — `get_stock_levels` defaults to `limit=10`, meaning count queries may see only a fraction of total records despite `total_rows` indicating the true count.
+
+**UI Improvements:**
+- **Scrollable tool records** (`streamlit_app.py`) — new `render_records()` helper wraps tool dataframes inside collapsed `st.expander` panels (📊 tool_name: N records). Each expander contains a scrollable `st.dataframe` (height 300px if >10 rows, auto-height otherwise).
+- **Triple return from send_query** — now returns `(text, data_dict, session_id)`. `data_dict` is passed to `render_records` and stored in `st.session_state` for display across rerenders.
+
+## Previous Updates (2026-06-04)
 
 **Critical (P0):**
 - **Summarization 40s blowup** — stripped `raw_response` from ToolMessage content before summary LLM input (dropped latency to ~1.3s)
@@ -373,7 +396,7 @@ See [bug_solver.md](./bug_solver.md) for known bugs and planned improvements.
 - Missing `import re` added to `tools_api.py`
 - Conversation memory routing — `memory_answer` path routes directly to `response_generation` node, skipping tools
 
-**Files affected:** `src/nodes.py`, `src/tools_api.py`, `src/graph.py`, `src/api_client.py`
+**Files affected:** `session_store.py`, `fast_main.py`, `streamlit_app.py`, `src/nodes.py`, `src/tools_api.py`, `src/graph.py`, `src/api_client.py`
 
 ---
 

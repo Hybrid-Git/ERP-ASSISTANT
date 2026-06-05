@@ -14,11 +14,12 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
-from langchain_core.messages import RemoveMessage,SystemMessage, HumanMessage
+from langchain_core.messages import RemoveMessage, SystemMessage, HumanMessage, AIMessage
 
 from src.graph import graph_builder
 from src.config import llm, normalizer_llm, get_cfg
 from src.nodes import ensure_cross_encoder
+import session_store
 
 app = FastAPI(
     title="CHAPTER-1-ASSIST",
@@ -29,16 +30,11 @@ graph = graph_builder()
 GRAPH_TIMEOUT_SECONDS = 300
 
 # ==============================
-# FINAL RESPONSE CACHE & SESSION STORAGE
+# FINAL RESPONSE CACHE
 # ==============================
-FINAL_RESPONSE_CACHE = OrderedDict()  # Cache for final API responses keyed by normalized user query
-FINAL_RESPONSE_CACHE_MAXSIZE = 500  # Max number of cached entries
-FINAL_RESPONSE_CACHE_TTL_SECONDS = 300  # 5 minutes
-
-# Server-side session memory.
-# This now stores only messages. No rolling summary is stored.
-SESSION_MEMORY = OrderedDict()  # session_id -> {"messages": [...], "summary": "..."}
-SESSION_MEMORY_MAXSIZE = 1000  # Max number of sessions to store in memory
+FINAL_RESPONSE_CACHE = OrderedDict()
+FINAL_RESPONSE_CACHE_MAXSIZE = 500
+FINAL_RESPONSE_CACHE_TTL_SECONDS = 300
 
 
 def normalize_query_for_cache(query: str) -> str:
@@ -397,6 +393,8 @@ async def run_graph_query(
 @app.on_event("startup")
 async def startup_event():
     try:
+        session_store.init_db()
+        print("Session store initialized.")
         print("FastAPI started. Graph already built. Warming up worker LLM...")
         start = time.perf_counter()
         await llm.ainvoke([SystemMessage(content="Return only: OK"),
@@ -417,33 +415,46 @@ async def root():
 @app.post("/chat")
 async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="format")):
     request_id = str(uuid.uuid4())
+    session_id = request.session_id or "default_session"
+
+    session = session_store.get_session(session_id)
+    if session is None:
+        session = session_store.create_session(session_id=session_id)
+        print(f"[SESSION] Auto-created session: {session_id}")
+
+    past_messages = session_store.load_messages(session_id)
+    past_summary = (session or {}).get("summary", "")
+
     langsmith_config = {
         "run_name": "CHAPTER1_ASSIST_CHAT",
         "tags": ["fastapi", "langgraph", "erp-assistant"],
         "metadata": {
             "request_id": request_id,
             "query": request.query,
-            "session_id": request.session_id,
+            "session_id": session_id,
         },
     }
 
     try:
-        session_id = request.session_id or "default_session"
-        session_data = SESSION_MEMORY.get(session_id, {"messages": [], "summary": ""})
-
         result = await run_graph_query(
             user_query=request.query,
-            past_messages=session_data.get("messages", []),
-            past_summary=session_data.get("summary", ""),
+            past_messages=past_messages,
+            past_summary=past_summary,
             langsmith_config=langsmith_config,
         )
 
-        SESSION_MEMORY[session_id] = {
-            "messages": result.get("updated_messages", []),
-            "summary": result.get("summary","")
-        }
-        while len(SESSION_MEMORY) > SESSION_MEMORY_MAXSIZE:
-            SESSION_MEMORY.popitem(last=False)
+        updated_messages = list(result.get("updated_messages", []))
+        response_text = result.get("response_text")
+        if response_text:
+            updated_messages.append(AIMessage(content=response_text))
+
+        session_store.save_session(
+            session_id,
+            updated_messages,
+            result.get("summary", ""),
+        )
+
+        result["session_id"] = session_id
 
         output_format = fmt or DEFAULT_OUTPUT_FORMAT
 
@@ -470,33 +481,44 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
 @app.post("/chat-text")
 async def chat_text(request: ChatRequest):
     request_id = str(uuid.uuid4())
+    session_id = request.session_id or "default_session"
+
+    session = session_store.get_session(session_id)
+    if session is None:
+        session = session_store.create_session(session_id=session_id)
+        print(f"[SESSION] Auto-created session: {session_id}")
+
+    past_messages = session_store.load_messages(session_id)
+    past_summary = (session or {}).get("summary", "")
+
     langsmith_config = {
         "run_name": "CHAPTER1_ASSIST_CHAT_TEXT",
         "tags": ["fastapi", "langgraph", "erp-assistant", "text-response"],
         "metadata": {
             "request_id": request_id,
             "query": request.query,
-            "session_id": request.session_id,
+            "session_id": session_id,
         },
     }
 
     try:
-        session_id = request.session_id or "default_session"
-        session_data = SESSION_MEMORY.get(session_id, {"messages": [], "summary": ""})
-
         result = await run_graph_query(
             user_query=request.query,
-            past_messages=session_data.get("messages", []),
-            past_summary=session_data.get("summary", ""),
+            past_messages=past_messages,
+            past_summary=past_summary,
             langsmith_config=langsmith_config,
         )
 
-        SESSION_MEMORY[session_id] = {
-            "messages": result.get("updated_messages", []),
-            "summary": result.get("summary","")
-        }
-        while len(SESSION_MEMORY) > SESSION_MEMORY_MAXSIZE:
-            SESSION_MEMORY.popitem(last=False)
+        updated_messages = list(result.get("updated_messages", []))
+        response_text = result.get("response_text")
+        if response_text:
+            updated_messages.append(AIMessage(content=response_text))
+
+        session_store.save_session(
+            session_id,
+            updated_messages,
+            result.get("summary", ""),
+        )
 
         text = result.get("response_text") or result.get("response")
         if not isinstance(text, str):
@@ -514,6 +536,69 @@ async def chat_text(request: ChatRequest):
             await format_response_as_chat_text(error_response),
             status_code=500,
         )
+
+
+# ==============================
+# Session Management Endpoints
+# ==============================
+
+
+class CreateSessionRequest(BaseModel):
+    name: str = ""
+
+
+class RenameSessionRequest(BaseModel):
+    name: str
+
+
+@app.get("/sessions")
+async def api_list_sessions():
+    sessions = session_store.list_sessions()
+    return {"sessions": sessions}
+
+
+@app.post("/sessions")
+async def api_create_session(body: CreateSessionRequest):
+    session = session_store.create_session(name=body.name)
+    return {"session": session}
+
+
+@app.delete("/sessions/{session_id}")
+async def api_delete_session(session_id: str):
+    deleted = session_store.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": True}
+
+
+@app.patch("/sessions/{session_id}")
+async def api_rename_session(session_id: str, body: RenameSessionRequest):
+    updated = session_store.rename_session(session_id, body.name)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"updated": True}
+
+
+@app.get("/sessions/{session_id}/history")
+async def api_session_history(session_id: str):
+    session = session_store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = session_store.load_messages(session_id)
+    history = []
+    for msg in messages:
+        if msg.type == "tool":
+            continue
+        if msg.type == "ai" and not msg.content and getattr(msg, "tool_calls", None):
+            continue
+        role = msg.type
+        content = msg.content
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content if isinstance(b, dict)
+            )
+        history.append({"role": role, "content": content})
+    return {"session_id": session_id, "messages": history}
 
 
 if __name__ == "__main__":
