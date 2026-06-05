@@ -4,7 +4,7 @@ load_dotenv()
 import os
 import yaml
 from langchain_ollama import OllamaEmbeddings, ChatOllama
-
+from langchain_openai import ChatOpenAI
 
 embedding_model = OllamaEmbeddings(model="bge-m3")
 
@@ -17,38 +17,72 @@ embedding_model = OllamaEmbeddings(model="bge-m3")
 #     reasoning=False,
 # )
 
-normalizer_llm = ChatOllama(
+# normalizer_llm = ChatOllama(
+#     model="qwen3:4b",
+#     temperature=0.0,
+#     keep_alive="30m",
+#     num_ctx=1024,
+#     num_predict=128,
+#     reasoning=False,
+# )
+# llm = ChatOllama(
+#     model="qwen3:latest",
+#     temperature=0.0,
+#     keep_alive="30m",
+#     num_ctx=8192,
+#     num_predict=2048,
+#     reasoning=False,
+# )
+normalizer_llm = ChatOpenAI(
     model="qwen3:4b",
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",
     temperature=0.0,
-    keep_alive="30m",
-    num_ctx=1024,
-    num_predict=128,
-    reasoning=False,
+    max_tokens=1.24,   # OpenAI-style replacement for num_predict
+    timeout=180,
+
+    # Ollama/OpenAI-compatible extra parameters
+    extra_body={
+        "keep_alive": "30m",
+        "think": False,   # closest equivalent of reasoning=False for Qwen thinking models
+    },
 )
-llm = ChatOllama(
+llm = ChatOpenAI(
     model="qwen3:latest",
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",
     temperature=0.0,
-    keep_alive="30m",
-    num_ctx=8192,
-    num_predict=2048,
-    reasoning=False,
+    max_tokens=2048,   # OpenAI-style replacement for num_predict
+    timeout=180,
+
+    # Ollama/OpenAI-compatible extra parameters
+    extra_body={
+        "keep_alive": "30m",
+        "think": False,   # closest equivalent of reasoning=False for Qwen thinking models
+    },
 )
-summary_llm = ChatOllama(
-    model="qwen3:latest",
-    temperature=0.0,
-    keep_alive="30m",
-    num_ctx=8192,
-    num_predict=2048,
-    reasoning=False,
+summary_llm = ChatOpenAI(
+        model="qwen3:latest",
+        base_url="http://localhost:11434/v1",
+        api_key="ollama",
+        temperature=0.0,
+        max_tokens=8192,   # OpenAI-style replacement for num_predict
+        timeout=180,
+
+        # Ollama/OpenAI-compatible extra parameters
+        extra_body={
+            "keep_alive": "30m",
+            "think": False,   # closest equivalent of reasoning=False for Qwen thinking models
+        },
 )
 
 print("LLM and embedding model initialised!")
 
 # ── API config (env vars) ──
-CHP1_API_BASE_URL = os.getenv("CHP1_API_BASE_URL", "https://dev.chapter1.finance/aiAnalytics/")
+CHP1_API_BASE_URL = os.getenv("CHP1_API_BASE_URL", "")
 CHP1_API_TOKEN = os.getenv("CHP1_API_TOKEN", "")
-CHP1_API_TIMEOUT = int(os.getenv("CHP1_API_TIMEOUT", "10"))
-COMPANY_ID = int(os.getenv("COMPANY_ID", "355"))
+CHP1_API_TIMEOUT = int(os.getenv("CHP1_API_TIMEOUT", ""))
+COMPANY_ID = int(os.getenv("COMPANY_ID", ""))
 
 # ── Pipeline config (YAML — edit config.yaml, not Python) ──
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")

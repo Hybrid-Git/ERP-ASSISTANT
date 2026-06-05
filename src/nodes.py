@@ -453,6 +453,28 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
+        # Greeting detection — respond to pure greetings, ignore for mixed queries with ERP intent
+        GREETING_PATTERNS = [
+            r"^(hello|hi|hey|hii|hiii|heyy|holla|namaste|namaskar|vanakkam|howdy|greetings|salam)\s*[!?.]*$",
+            r"^(good\s*morning|good\s*afternoon|good\s*evening|good\s*night|gm|gn)\s*[!?.]*$",
+            r"^(hey\s+there|hi\s+there|hello\s+there)\s*[!?.]*$",
+            r"^(how\s+are\s+(you|u)|how\s+are\s+you\s+doing|how's\s+it\s+going|what's\s+up|wassup|sup)\s*[!?.]*$",
+            r"^(kaise\s+ho|kya\s+haal|kya\s+kar\s+rahe|kya\s+kar\s+raha|kya\s+kar\s+rahi)\s*[!?.]*$",
+        ]
+        full_query = original_query.strip().lower()
+        is_greeting = any(re.match(p, full_query) for p in GREETING_PATTERNS)
+        if is_greeting:
+            has_erp_keywords = any(kw in full_query for kw in ROUTE_KEYWORDS)
+            if not has_erp_keywords:
+                print(f"Greeting detected — responding with welcome message: {user_query}")
+                return {
+                    "retrieved_tools": [],
+                    "selected_tools": [],
+                    "query_parts": query_parts,
+                    "skip_router": True,
+                    "memory_answer": "Hello! I am your Chapter1 ERP assistant. I can help you with customer details, stock levels, GST summaries, TDS/TCS reports, and more. How can I assist you today?",
+                }
+
         selected_tool_groups: list[list[str]] = []
 
         for part in query_parts:
@@ -517,7 +539,7 @@ async def semantic_search(state: MainState) -> MainState:
             "query_parts": query_parts,
             "skip_router": True,
             "unsupported": True,
-            "unsupported_reason": "No supported ERP tool matched this query.",
+            "unsupported_reason": "I am an ERP assistant and can only help with questions about customers, stock/inventory, GST summaries, TDS reports, and TCS reports. Please ask a relevant business query.",
         }
 
     except Exception as e:
@@ -1020,6 +1042,18 @@ async def chat_model_node(state: MainState):
         print("available_tool_names:", [tool.name for tool in available_tools])
 
         if not available_tools:
+            existing_memory_answer = state.get("memory_answer", "")
+            if existing_memory_answer:
+                print(f"[CHAT MODEL] Using pre-set memory_answer: {existing_memory_answer}")
+                return {
+                    "messages": [
+                        HumanMessage(content=user_query),
+                        AIMessage(content=existing_memory_answer),
+                    ],
+                    "memory_answer": existing_memory_answer,
+                    "loop_count": loop_count + 1,
+                }
+
             print("[CHAT MODEL] No available tools. Trying conversation memory...")
             previous_summary = state.get("summary", "") or ""
             conversation_context = state.get("conversation_context", {})
@@ -1049,9 +1083,9 @@ async def chat_model_node(state: MainState):
                     reason = (getattr(mem_resp, "content", "") or "").strip()
                 except Exception as e:
                     print(f"[CHAT MODEL] Memory LLM error: {e}")
-                    reason = state.get("unsupported_reason", "No available tools for this query.")
+                    reason = state.get("unsupported_reason", "I can only answer ERP-related queries about customers, stock, GST, TDS, and TCS. Please ask a relevant business question.")
             else:
-                reason = state.get("unsupported_reason", "No available tools for this query.")
+                reason = state.get("unsupported_reason", "I can only answer ERP-related queries about customers, stock, GST, TDS, and TCS. Please ask a relevant business question.")
 
             return {
                 "messages": [

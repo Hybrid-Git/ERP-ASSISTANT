@@ -2,7 +2,7 @@ from langsmith import traceable
 import requests
 from typing import Any, Optional
 import time
-from src.config import CHP1_API_BASE_URL, CHP1_API_TIMEOUT
+from src.config import CHP1_API_BASE_URL, CHP1_API_TIMEOUT,CHP1_API_TOKEN
 
 
 def build_url(endpoint: str) -> str:
@@ -65,7 +65,7 @@ def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict[str, 
         response = requests.post(
                                 url,    
                                 json=final_body,
-                                headers={"Authorization": "ROHANVAJA007"},
+                                headers={"Authorization": f"{CHP1_API_TOKEN}"},
                                 timeout=CHP1_API_TIMEOUT,
                             )
 
