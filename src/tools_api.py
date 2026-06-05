@@ -2,7 +2,7 @@ from langchain.tools import tool
 import json
 import re
 from typing import Optional, Any
-from src.api_client import api_post
+from src.api import api_post
 from src.config import COMPANY_ID
 import time
 import copy
