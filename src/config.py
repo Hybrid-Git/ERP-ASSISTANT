@@ -4,9 +4,9 @@ load_dotenv()
 import os
 import yaml
 from langchain_ollama import OllamaEmbeddings, ChatOllama
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI,OpenAIEmbeddings
 
-embedding_model = OllamaEmbeddings(model="bge-m3")
+# embedding_model = OllamaEmbeddings(model="bge-m3")
 
 # normalizer_llm = ChatOllama(
 #     model="qwen3:latest",
@@ -33,6 +33,12 @@ embedding_model = OllamaEmbeddings(model="bge-m3")
 #     num_predict=2048,
 #     reasoning=False,
 # )
+embedding_model = OpenAIEmbeddings(
+    model="bge-m3",
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",
+    timeout=180,
+)
 normalizer_llm = ChatOpenAI(
     model="qwen3:4b",
     base_url="http://localhost:11434/v1",
