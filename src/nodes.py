@@ -2419,11 +2419,14 @@ async def response_generation_node(state: MainState):
     )
 
     try:
-        response = await summary_llm.ainvoke([
+        full_content = ""
+        async for chunk in summary_llm.with_config({"tags": ["response_stream"]}).astream([
             SystemMessage(content=system_prompt),
             HumanMessage(content=human_prompt),
-        ])
-        response_text = (getattr(response, "content", "") or "").strip()
+        ]):
+            if hasattr(chunk, "content") and chunk.content:
+                full_content += chunk.content
+        response_text = full_content.strip()
         if not response_text:
             raise ValueError("Empty response from LLM")
     except Exception as e:

@@ -38,7 +38,7 @@ normalizer_llm = ChatOpenAI(
     base_url="http://localhost:11434/v1",
     api_key="ollama",
     temperature=0.0,
-    max_tokens=1.24,   # OpenAI-style replacement for num_predict
+    max_tokens=1024,   # OpenAI-style replacement for num_predict
     timeout=180,
 
     # Ollama/OpenAI-compatible extra parameters

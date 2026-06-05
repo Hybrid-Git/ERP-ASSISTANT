@@ -1,6 +1,6 @@
 # Chapter1-Assist
 
-A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the backend API, and returning structured JSON or natural-language responses.
+A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the backend API, and returning structured JSON or natural-language responses. Detects greetings and responds appropriately; silently rejects out-of-context queries.
 
 **Author:** Yash Sheth
 
@@ -28,8 +28,10 @@ Sessions are stored in-memory (dict + threading.Lock) and do NOT survive a serve
 ```
 START
   -> translator            (Ollama qwen3:4b — optional Hinglish→English, language detection with fast-path shortcuts)
-  -> semantic_search       (bge-m3 embedding + cross-encoder rerank + keyword fallback)
-  -> chat_model            (Ollama qwen3:latest with bind_tools — native tool calling + retry loop + repair layer)
+  -> semantic_search       (bge-m3 embedding + cross-encoder rerank + keyword fallback; detects greetings & meta-questions;
+                            marks unsupported queries with clear refusal message)
+  -> chat_model            (Ollama qwen3:latest with bind_tools — native tool calling + retry loop + repair layer;
+                            falls back to memory_answer when no tools are selected)
   -> routing_node          (conditional: tool_calls found? → tools | memory_answer? → response_generation | else → END)
   -> tools                 (executes backend APIs)
   -> deterministic_final   (Python dict builder — scopes results to current turn, builds conversation_context)
@@ -43,7 +45,7 @@ START
 | Node | Responsibility |
 |---|---|
 | `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — has 3 fast-path shortcuts for plain English, routeable queries, and no-normalization-needed cases. Model: `qwen3:4b`. Stores both `original_query` and `canonical_query`. |
-| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. No LLM used — purely deterministic scoring. Splits multi-intent queries by connector words. Detects meta-questions ("what did we ask?") and returns empty tool list. |
+| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. No LLM used — purely deterministic scoring. Splits multi-intent queries by connector words. Detects meta-questions ("what did we ask?") and returns empty tool list. Detects pure greetings (hello, hi, namaste, etc.) and responds with a welcome message. Marks unsupported non-ERP queries with a clear refusal. |
 | `chat_model` | Generates tool calls using Ollama native `bind_tools()` with internal retry loop (up to 3 rounds) when the LLM emits fewer calls than requested tools. Followed by `_apply_repair` — a registry-driven arg fixup layer handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, cross-tool corrections, and multi-identifier expansion. Falls back to `memory_answer` via summary LLM when no tools are selected. |
 | `routing_node` | Routes to `tools` if the last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends the graph. Falls through after `loop_count > 5`. |
 | `tools` | Executes the 6 ERP tool functions against the Chapter-1 backend API via `ToolNode`. |
@@ -71,6 +73,12 @@ START
 ### Local LLMs, No External API
 
 Worker and summary LLM use `qwen3:latest` (8B); translator uses `qwen3:4b` (4B) — all running locally via Ollama with `reasoning=False`. No Groq/OpenAI keys, no rate limits, no per-query cost.
+
+### Greeting Detection & Out-of-Context Refusal
+
+The `semantic_search_node` recognizes common greetings (hello, hi, hey, namaste, good morning, how are you, etc.) via regex patterns. Pure greetings (no ERP keywords) return a welcome message immediately, bypassing all LLM calls and tool matching. Queries with mixed intent (e.g., "hello show stock") proceed to normal ERP handling.
+
+Non-ERP, non-greeting queries receive a clear refusal message: *"I am an ERP assistant and can only help with questions about customers, stock/inventory, GST summaries, TDS reports, and TCS reports."*
 
 ### Fast-Path Translator
 
@@ -121,7 +129,7 @@ Applied after all tool-specific repairs:
 
 ### Conversation Memory & Context
 
-- **`memory_answer`** — when no tools are relevant, the summary LLM answers from conversation history
+- **`memory_answer`** — when no tools are relevant, the summary LLM answers from conversation history. Also set directly by `semantic_search` for greetings (welcome message) and unsupported queries (refusal message). The `chat_model_node` passes through any pre-set `memory_answer` without calling the LLM.
 - **`conversation_context`** — entity tracking (customer/product names, IDs) across turns
 - **`last_tool_call`** — persists tool arguments across summarization for follow-up queries
 
@@ -159,8 +167,6 @@ Stock API ignores sort params. `get_stock_levels` fetches 200 records, sorts loc
 
 | Component | Technology |
 |---|---|
-| Component | Technology |
-|---|---|---|
 | Framework | FastAPI |
 | Graph Engine | LangGraph |
 | Worker LLM | `qwen3:latest` (8B) via Ollama (`reasoning=False`, `num_ctx=8192`) |
@@ -189,7 +195,7 @@ CHAPTER1-ASSIST/
 ├── src/
 │   ├── config.py             # LLM setup, API env vars, YAML config loader
 │   ├── schema.py             # State/schema definitions (MainState, InputState, OutputState)
-│   ├── api_client.py         # HTTP client for Chapter-1 ERP API
+│   ├── api.py                # HTTP client for Chapter-1 ERP API
 │   ├── tools_api.py          # ERP tool functions (API calls, caching, filtering, projection)
 │   ├── tool_doc.py           # Tool registry (TOOL_INTENT_REGISTRY), repair configs, field aliases, category maps
 │   ├── nodes.py              # All LangGraph nodes (translator, semantic search, chat model, routing, deterministic final, response generation, summarization)
@@ -200,6 +206,19 @@ CHAPTER1-ASSIST/
 
 ---
 
+## Prerequisites
+
+- **Python 3.11+**
+- **Ollama** installed and running — download from [ollama.com](https://ollama.com)
+- **Chapter-1 ERP API credentials** — provided by your account team
+
+### Verify Ollama
+
+```bash
+ollama list          # should show installed models
+ollama serve         # ensure the server is running (default: http://localhost:11434)
+```
+
 ## Environment Variables
 
 Create a `.env` file in the project root:
@@ -209,51 +228,112 @@ CHP1_API_BASE_URL=https://dev.chapter1.finance/aiAnalytics/
 CHP1_API_TOKEN=your_api_token_here
 COMPANY_ID=355
 CHP1_API_TIMEOUT=10
+
+# Optional: LangSmith tracing for debugging
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 ```
+
+| Variable | Required | Description |
+|---|---|---|
+| `CHP1_API_BASE_URL` | Yes | Chapter-1 ERP API base URL |
+| `CHP1_API_TOKEN` | Yes | API authentication token |
+| `COMPANY_ID` | Yes | Company identifier for API requests |
+| `CHP1_API_TIMEOUT` | No | API request timeout in seconds (default: 10) |
+| `LANGSMITH_*` | No | LangSmith tracing (leave empty to disable) |
 
 ---
 
 ## Installation
 
+### 1. Clone & Setup Virtual Environment
+
 ```bash
+git clone <repo-url> chapter1-assist
+cd chapter1-assist
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Pull Ollama models:
+### 2. Pull Ollama Models
 
 ```bash
-ollama pull qwen3:latest
-ollama pull qwen3:4b
-ollama pull bge-m3
+ollama pull qwen3:latest    # 8B worker + summary LLM
+ollama pull qwen3:4b        # 4B translator LLM
+ollama pull bge-m3          # embedding model for tool routing
 ```
 
-The cross-encoder downloads on first startup.
+### 3. Configure Environment
+
+```bash
+cp .env.example .env        # or create .env manually (see above)
+# Edit .env with your credentials
+```
+
+The cross-encoder model (`cross-encoder/ms-marco-MiniLM-L-6-v2`) downloads automatically on first startup (~500 MB).
 
 ---
 
 ## Running
 
-### FastAPI Server
+### Start the FastAPI Server
 
 ```bash
 python fast_main.py
 ```
 
+Expected output:
+```
+LLM and embedding model initialised!
+Building graph...
+Session store initialized.
+FastAPI started. Graph already built. Warming up worker LLM...
+Worker LLM warmup completed in 1.3s
+Cross-encoder model loaded successfully during startup.
+Application startup complete.
+```
+
 Server: `http://127.0.0.1:8000`
 
-First startup takes ~5-10s for cross-encoder model load.
+First startup takes ~5-10s for cross-encoder model download + LLM warmup.
 
-### Streamlit UI (Optional)
+### Health Check
 
 ```bash
+curl http://127.0.0.1:8000/
+# {"message":"ERP Assistant API is running"}
+```
+
+> **Order matters:** Start the FastAPI server **first**, then launch the Streamlit UI. The Streamlit app depends on the `/chat` API.
+
+### Streamlit UI (Optional, run in a second terminal)
+
+```bash
+# After FastAPI is already running, open a new terminal:
+source venv/bin/activate
 streamlit run streamlit_app.py
 ```
 
 UI: `http://127.0.0.1:8501`
 
-The Streamlit client sends queries to the FastAPI `/chat` endpoint and displays natural-language responses.
+The Streamlit client sends queries to the FastAPI `/chat` endpoint and displays natural-language responses with expandable tool data tables.
+
+### Quick Test
+
+```bash
+# Greeting
+curl -X POST http://127.0.0.1:8000/chat?format=text \
+  -H "Content-Type: application/json" \
+  -d '{"query": "hello"}'
+
+# ERP query
+curl -X POST http://127.0.0.1:8000/chat?format=text \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Show stock for HSN 48211090"}'
+```
 
 ---
 
@@ -300,6 +380,7 @@ Same input, returns plain text response (the `response_text` field).
 
 ## Test Queries
 
+### ERP Queries
 ```json
 {"query": "Nykaa Bangalore customer id, name and opening balance batao"}
 {"query": "jo sabse kam closing quantity wala product hai uska value aur name chaia"}
@@ -310,6 +391,26 @@ Same input, returns plain text response (the `response_text` field).
 {"query": "Show TDS outstanding and TCS outstanding from 2024-04-01 to 2024-12-31"}
 {"query": "negative closing quantity wale products dikhao"}
 {"query": "sirf closing quantity batao"}
+```
+
+### Greetings (responds with welcome message)
+```json
+{"query": "hello"}
+{"query": "hi"}
+{"query": "good morning"}
+{"query": "namaste"}
+{"query": "how are you?"}
+```
+
+### Out-of-Context Queries (responds with refusal)
+```json
+{"query": "what is the meaning of life?"}
+{"query": "tell me a joke"}
+{"query": "write a poem"}
+```
+
+### Meta Questions (answers from conversation memory)
+```json
 {"query": "humne abhi tak kya poocha hai?"}
 ```
 
@@ -355,6 +456,17 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 
 ## Recent Updates (2026-06-05)
 
+**Greeting Detection & Out-of-Context Handling:**
+- **Greeting detection** (`src/nodes.py:456-476`) — `semantic_search_node` recognizes pure greetings (hello, hi, hey, namaste, good morning, how are you, kaise ho, etc.) via regex patterns and returns a welcome `memory_answer` immediately, bypassing all LLM calls and tool matching.
+- **Out-of-context refusal** (`src/nodes.py:542`) — unsupported non-ERP queries now receive a clear message: *"I am an ERP assistant and can only help with questions about customers, stock/inventory, GST summaries, TDS reports, and TCS reports."*
+- **Memory answer passthrough** (`src/nodes.py:1045-1055`) — `chat_model_node` checks for a pre-set `memory_answer` and passes it through without calling the LLM, enabling the greeting path.
+
+**Fixes & Improvements:**
+- **`api_client.py` renamed to `api.py`** — cleaner naming; import updated in `tools_api.py`.
+- **`response_generation_node` astream fix** (`src/nodes.py:2422-2429`) — `summary_llm.astream()` was incorrectly awaited and treated as a single message; now correctly iterates over async chunks and accumulates the full response.
+
+## Previous Updates (2026-06-05)
+
 **Session Persistence:**
 - **Replaced SQLite with in-memory store** (`session_store.py`) — sessions stored in `dict` + `threading.Lock`. No file I/O, no schema migrations, simplifies deployment. Sessions are lost on restart — switch back to SQLite if persistence is needed.
 - **History display fix** (`fast_main.py`) — appends `AIMessage(content=response_text)` before `save_session` so the conversation response appears correctly in history. History endpoint filters out tool/empty-content messages.
@@ -396,7 +508,7 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 - Missing `import re` added to `tools_api.py`
 - Conversation memory routing — `memory_answer` path routes directly to `response_generation` node, skipping tools
 
-**Files affected:** `session_store.py`, `fast_main.py`, `streamlit_app.py`, `src/nodes.py`, `src/tools_api.py`, `src/graph.py`, `src/api_client.py`
+**Files affected:** `session_store.py`, `fast_main.py`, `streamlit_app.py`, `src/nodes.py`, `src/tools_api.py`, `src/graph.py`, `src/api_client.py`, `src/api.py`
 
 ---
 

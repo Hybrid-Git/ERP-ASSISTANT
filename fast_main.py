@@ -350,7 +350,9 @@ async def run_graph_query(
         }
 
     except Exception as e:
+        import traceback
         total_time = round(time.perf_counter() - start_time, 3)
+        print(f"[GRAPH ERROR] {traceback.format_exc()}")
         return {
             "response": make_error_response(
                 user_query=user_query,

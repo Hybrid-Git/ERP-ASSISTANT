@@ -2,13 +2,4 @@ venv/
 .env
 chroma_db
 __pycache__
-.langgraph_api/
-graph.txt
-models.txt
-nodes.txt
-prompt.txt*.pyc
-CHANGES.md
-ARCHITECTURE.md
-DIFF.md
-changes.md
-bug_solver.md
+
