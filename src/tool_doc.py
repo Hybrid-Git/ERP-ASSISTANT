@@ -61,7 +61,8 @@ TOOL_INTENT_REGISTRY = {
             "base_args": {"search": "", "fields": ["id", "name"]},
             "keyword_args": {"nykaa": {"search": "Nykaa"}},
             "city_filter": {"key": "name"},
-            "field_triggers": {"opening balance": "openingBalance", "opening": "openingBalance"},
+            "field_triggers": {"opening balance": "openingBalance",                 "opening": "openingBalance",
+                "opening type": "openingType"},
             "param_aliases": {"name": "search"},
         },
     },
@@ -106,7 +107,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "stock",
         "multi_call_ok": True,
         "description": "Fetch stock and inventory levels using product name, SKU or HSN; returns closing quantity/value, low stock and out-of-stock details.",
-            "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt. Can call w/ sort descending for max, ascending for min.",
+        "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt. Can call w/ sort descending for max, ascending for min.",
         "aliases": [
             "stock", "inventory", "product", "products", "item", "items",
             "maal", "jaththo", "satha", "stock_levels", "stock_report",
@@ -145,7 +146,7 @@ TOOL_INTENT_REGISTRY = {
     "get_gst_summary": {
         "category": "gst_report",
         "description": "Fetch GST summary/report by date range; supports B2B, B2C, exports, nil/exempt, credit notes and grand total rows.",
-        "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nillRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter.",
+        "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nilRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter.",
         "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge"],
         "keywords": [
             "b2b", "b2c", "b2c large", "b2clarge", "b2c small", "b2csmall",
@@ -184,7 +185,7 @@ TOOL_INTENT_REGISTRY = {
                 "to_date": "",
                 "fields": ["category", "name", "voucherCount", "taxableAmount", "igst", "cgst", "sgst", "cess", "tax", "invoiceAmount"],
             },
-            "date_keywords": ["gst", "b2b", "grand total", "b2c", "exports", "nil", "exempt", "igst", "cgst", "sgst", "cess", "taxable", "invoice"],
+            "date_keywords": ["gst", "b2b", "grand total", "b2c", "exports", "nil", "exempt"],
             "remove_filters": True,
             "category_to_filter": True,
             "category_map": {
@@ -194,10 +195,10 @@ TOOL_INTENT_REGISTRY = {
                 "b2c large": "b2cLarge",
                 "b2c": "b2cLarge",
                 "exports": "exports",
-                "nil rated": "nillRated",
-                "nil": "nillRated",
-                "exempt": "nillRated",
-                "exempted": "nillRated",
+                "nil rated": "nilRated",
+                "nil": "nilRated",
+                "exempt": "nilRated",
+                "exempted": "nilRated",
             },
             "field_triggers": {
                 "taxable amount": "taxableAmount",

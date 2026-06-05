@@ -53,7 +53,7 @@ def cached_api_post(endpoint: str, body: dict) -> dict:
         "cached_at": now,
         "result": copy.deepcopy(result),
     }
-    while len(api_cache) > api_cache_maxsize:
+    while len(api_cache) >= api_cache_maxsize:
         api_cache.popitem(last=False)
     return copy.deepcopy(result)
 
@@ -343,8 +343,8 @@ def append_report_summary_row(result: dict, report_type: str) -> dict:
     for record in records:
         if isinstance(record, dict):
             normalized_records.append({
-                "recordType": report_type,
                 **record,
+                "recordType": report_type,
             })
 
     summary = raw.get("summary")
@@ -487,7 +487,7 @@ def get_customer(
         # 1. Fetch-all keywords → empty search
         non_specific = {"all", "all customers", "all parties", "all ledgers", "everyone", "every customer"}
         # 2. Comma-separated list of names (e.g. "kolkata, punjab, bangalore") → not a real name
-        comma_separated_names = bool(re.search(r'\w+,\s*\w+', search))
+        comma_separated_names = search.count(",") >= 2
         if stripped in non_specific or comma_separated_names:
             search = ""
 
@@ -581,14 +581,6 @@ def get_customer_ledger(
     return json.dumps(final_result, ensure_ascii=False)
 
 
-def _safe_sort_key(record: dict, field: str):
-    val = record.get(field)
-    if val is None:
-        return float("-inf")
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return str(val)
 
 
 @tool
@@ -651,7 +643,10 @@ def get_stock_levels(
     print(f"[STOCK DEBUG] After cached_api_post: raw_data_len={raw_len}, fields={fields}")
 
     if low_stock_only and fields is not None:
-        if isinstance(fields, list) and "isLowStock" not in fields:
+        if isinstance(fields, str):
+            if low_stock_only and "isLowStock" not in fields:
+                fields = fields + ",isLowStock"
+        elif isinstance(fields, list) and "isLowStock" not in fields:
             fields = fields + ["isLowStock"]
         elif isinstance(fields, dict):
             fields = {**fields, "isLowStock": True}
@@ -691,6 +686,8 @@ def get_stock_levels(
             key=_sort_key,
             reverse=(sort_order or "").lower() == "desc",
         )
+        page = max(page,1)
+        limit = max(limit,1)
         start = (page - 1) * limit
         end = start + limit
         result["data"] = sorted_data[start:end]

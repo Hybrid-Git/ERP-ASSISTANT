@@ -16,9 +16,25 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from langchain_core.messages import RemoveMessage, SystemMessage, HumanMessage, AIMessage, AIMessageChunk
 
+
+async def _timeout_iterate(agen, timeout):
+    """Iterate over an async generator with a per-step timeout.
+
+    Compatible with Python < 3.11 (unlike asyncio.timeout()).
+    """
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(agen.__anext__(), timeout=timeout)
+                yield item
+            except StopAsyncIteration:
+                return
+    except asyncio.TimeoutError:
+        raise TimeoutError()
+
 from src.graph import graph_builder
 from src.config import llm, normalizer_llm, get_cfg
-from src.nodes import ensure_cross_encoder
+from src.nodes import get_cross_encoder
 import session_store
 
 app = FastAPI(
@@ -35,6 +51,7 @@ GRAPH_TIMEOUT_SECONDS = 300
 FINAL_RESPONSE_CACHE = OrderedDict()
 FINAL_RESPONSE_CACHE_MAXSIZE = 500
 FINAL_RESPONSE_CACHE_TTL_SECONDS = 300
+CACHE_LOCK = asyncio.Lock()
 
 
 def normalize_query_for_cache(query: str) -> str:
@@ -59,37 +76,38 @@ def should_cache_final_response(result: dict) -> bool:
     return success is True and status == "success"
 
 
-def get_cached_final_response(query: str):
-    key = normalize_query_for_cache(query)
-    cached = FINAL_RESPONSE_CACHE.get(key)
+async def get_cached_final_response(query: str):
+    async with CACHE_LOCK:
+        key = normalize_query_for_cache(query)
+        cached = FINAL_RESPONSE_CACHE.get(key)
 
-    if not cached:
-        print(f"[FINAL CACHE MISS] {key}")
-        return None
+        if not cached:
+            print(f"[FINAL CACHE MISS] {key}")
+            return None
 
-    age = time.time() - cached.get("cached_at", 0)
-    if age > FINAL_RESPONSE_CACHE_TTL_SECONDS:
-        print(f"[FINAL CACHE EXPIRED] {key}")
-        FINAL_RESPONSE_CACHE.pop(key, None)
-        return None
+        age = time.monotonic() - cached.get("cached_at", 0)
+        if age > FINAL_RESPONSE_CACHE_TTL_SECONDS:
+            print(f"[FINAL CACHE EXPIRED] {key}")
+            FINAL_RESPONSE_CACHE.pop(key, None)
+            return None
 
-    result = cached.get("result")
-    if not isinstance(result, dict) or "response" not in result:
-        print(f"[FINAL CACHE INVALID] {key}")
-        FINAL_RESPONSE_CACHE.pop(key, None)
-        return None
+        result = cached.get("result")
+        if not isinstance(result, dict) or "response" not in result:
+            print(f"[FINAL CACHE INVALID] {key}")
+            FINAL_RESPONSE_CACHE.pop(key, None)
+            return None
 
-    print(f"[FINAL CACHE HIT] {key}")
+        print(f"[FINAL CACHE HIT] {key}")
 
-    # Use deepcopy instead of JSON serialization because LangChain objects may not serialize cleanly.
-    result = copy.deepcopy(result)
-    result["timings"] = [{"node": "final_response_cache", "duration_sec": 0.001}]
-    result["total_time_sec"] = 0.001
+        # Use deepcopy instead of JSON serialization because LangChain objects may not serialize cleanly.
+        result = copy.deepcopy(result)
+        result["timings"] = [{"node": "final_response_cache", "duration_sec": 0.001}]
+        result["total_time_sec"] = 0.001
 
-    return result
+        return result
 
 
-def set_cached_final_response(query: str, result: dict):
+async def set_cached_final_response(query: str, result: dict):
     if not should_cache_final_response(result):
         return
 
@@ -102,18 +120,19 @@ def set_cached_final_response(query: str, result: dict):
         "total_time_sec": result.get("total_time_sec", 0.0),
     }
 
-    FINAL_RESPONSE_CACHE[key] = {
-        "cached_at": time.time(),
-        "result": copy.deepcopy(cacheable_result),
-    }
-    while len(FINAL_RESPONSE_CACHE) > FINAL_RESPONSE_CACHE_MAXSIZE:
-        FINAL_RESPONSE_CACHE.popitem(last=False)
+    async with CACHE_LOCK:
+        FINAL_RESPONSE_CACHE[key] = {
+            "cached_at": time.monotonic(),
+            "result": copy.deepcopy(cacheable_result),
+        }
+        while len(FINAL_RESPONSE_CACHE) > FINAL_RESPONSE_CACHE_MAXSIZE:
+            FINAL_RESPONSE_CACHE.popitem(last=False)
     print(f"[FINAL CACHE SET] {key}")
 
 
 class ChatRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    session_id: Optional[str] = "default_session"
+    query: str = Field(..., min_length=1, max_length=2000)
+    session_id: str = "default_session"
 
 
 def make_error_response(
@@ -135,7 +154,8 @@ def make_error_response(
     }
 
 
-DEFAULT_OUTPUT_FORMAT = os.getenv("OUTPUT_FORMAT", "text")
+def get_output_format() -> str:
+    return os.getenv("OUTPUT_FORMAT", "text")
 
 
 _pretty_field_names = get_cfg("pretty_field_names", default={})
@@ -177,7 +197,7 @@ async def format_response_as_chat_text(
     data = response_data.get("data", {})
 
     if status == "needs_clarification":
-        return f"ℹ️ {summary if summary else 'Could you please clarify your request with a specific name or ID?'}"
+        return f"[INFO] {summary if summary else 'Could you please clarify your request with a specific name or ID?'}"
 
     if status == "no_matching_records":
         return "I checked your ERP records but couldn't find any matching data for that description."
@@ -210,7 +230,7 @@ async def run_graph_query(
     langsmith_config: dict | None = None,
     past_summary: str | None = None,
 ):
-    cached_result = get_cached_final_response(user_query)
+    cached_result = await get_cached_final_response(user_query)
     if cached_result is not None:
         # Keep session memory unchanged on cache hits.
         cached_result["updated_messages"] = past_messages or []
@@ -245,16 +265,18 @@ async def run_graph_query(
     messages_tracker = list(initial_state["messages"])
     config = langsmith_config or {}
     session_id = config.get("metadata", {}).get("session_id", "default_session")
-    config["configurable"] = {"thread_id": session_id}
+    config = {**config, "configurable": {"thread_id": session_id}}
     try:
         summary_tracker = past_summary or ""
         response_text = None
-        async with asyncio.timeout(GRAPH_TIMEOUT_SECONDS):
-            async for chunks in graph.astream(
+        async for chunks in _timeout_iterate(
+            graph.astream(
                 initial_state,
                 config=config,
                 stream_mode="updates",
-            ):
+            ),
+            GRAPH_TIMEOUT_SECONDS,
+        ):
                 for node_name, state_update in chunks.items():
                     print(f"Finished running: {node_name}")
 
@@ -346,7 +368,7 @@ async def run_graph_query(
             "timings": timings,
             "total_time_sec": total_time,
             "updated_messages": messages_tracker,
-            "summary": past_summary or "",
+            "summary": summary_tracker or "",
         }
 
     except Exception as e:
@@ -388,7 +410,7 @@ async def run_graph_query(
         "summary": summary_tracker,
     }
 
-    set_cached_final_response(user_query, result)
+    await set_cached_final_response(user_query, result)
     return result
 
 
@@ -397,16 +419,24 @@ async def startup_event():
     try:
         session_store.init_db()
         print("Session store initialized.")
+    except Exception as e:
+        print("Session store init failed:", e)
+
+    try:
         print("FastAPI started. Graph already built. Warming up worker LLM...")
         start = time.perf_counter()
         await llm.ainvoke([SystemMessage(content="Return only: OK"),
                            HumanMessage(content="ping")])
         elapsed_time = time.perf_counter() - start
         print(f"Worker LLM warmup completed in {round(elapsed_time, 3)}s")
-        ensure_cross_encoder()
+    except Exception as e:
+        print("LLM warmup failed (will load on first query):", e)
+
+    try:
+        get_cross_encoder()
         print("Cross-encoder model loaded successfully during startup.")
     except Exception as e:
-        print("Worker LLM warmup failed:", e)
+        print("Cross-encoder warmup failed (will load lazily on first query):", e)
 
 
 @app.get("/")
@@ -419,10 +449,7 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
     request_id = str(uuid.uuid4())
     session_id = request.session_id or "default_session"
 
-    session = session_store.get_session(session_id)
-    if session is None:
-        session = session_store.create_session(session_id=session_id)
-        print(f"[SESSION] Auto-created session: {session_id}")
+    session = session_store.get_or_create_session(session_id)
 
     past_messages = session_store.load_messages(session_id)
     past_summary = (session or {}).get("summary", "")
@@ -457,8 +484,9 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
         )
 
         result["session_id"] = session_id
+        result.pop("updated_messages", None)
 
-        output_format = fmt or DEFAULT_OUTPUT_FORMAT
+        output_format = fmt or get_output_format()
 
         if output_format == "text":
             text = result.get("response_text") or result.get("response")
@@ -485,10 +513,7 @@ async def chat_stream(request: ChatRequest):
     request_id = str(uuid.uuid4())
     session_id = request.session_id or "default_session"
 
-    session = session_store.get_session(session_id)
-    if session is None:
-        session = session_store.create_session(session_id=session_id)
-        print(f"[SESSION] Auto-created session: {session_id}")
+    session = session_store.get_or_create_session(session_id)
 
     past_messages = session_store.load_messages(session_id)
     past_summary = (session or {}).get("summary", "")
@@ -537,11 +562,14 @@ async def chat_stream(request: ChatRequest):
         tokens_emitted = False
 
         try:
-            async with asyncio.timeout(GRAPH_TIMEOUT_SECONDS):
-                async for event in graph.astream_events(
-                    initial_state,
-                    config=config,
-                    version="v2",
+            try:
+                async for event in _timeout_iterate(
+                    graph.astream_events(
+                        initial_state,
+                        config=config,
+                        version="v2",
+                    ),
+                    GRAPH_TIMEOUT_SECONDS,
                 ):
                     kind = event["event"]
                     tags = event.get("tags", [])
@@ -570,11 +598,22 @@ async def chat_stream(request: ChatRequest):
                                 d = output["final_response"].get("data", {})
                                 if d:
                                     stream_data = d
-        except TimeoutError:
-            yield f"data: {json.dumps({'error': 'Request timed out'})}\n\n"
-        except Exception as e:
-            print(f"Stream error: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            except TimeoutError:
+                yield f"data: {json.dumps({'error': 'Request timed out'})}\n\n"
+            except asyncio.CancelledError:
+                print("[SSE] Client disconnected — saving partial session")
+                raise
+            except Exception as e:
+                print(f"Stream error: {e}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            if response_text:
+                try:
+                    updated = list(messages_tracker)
+                    updated.append(AIMessage(content=response_text))
+                    session_store.save_session(session_id, updated, summary_tracker)
+                except Exception:
+                    pass
 
         if response_text:
             if not tokens_emitted:
@@ -594,10 +633,7 @@ async def chat_text(request: ChatRequest):
     request_id = str(uuid.uuid4())
     session_id = request.session_id or "default_session"
 
-    session = session_store.get_session(session_id)
-    if session is None:
-        session = session_store.create_session(session_id=session_id)
-        print(f"[SESSION] Auto-created session: {session_id}")
+    session = session_store.get_or_create_session(session_id)
 
     past_messages = session_store.load_messages(session_id)
     past_summary = (session or {}).get("summary", "")
@@ -631,6 +667,7 @@ async def chat_text(request: ChatRequest):
             result.get("summary", ""),
         )
 
+        result.pop("updated_messages", None)
         text = result.get("response_text") or result.get("response")
         if not isinstance(text, str):
             text = await format_response_as_chat_text(text)

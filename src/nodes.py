@@ -32,19 +32,6 @@ LIST_WORDS = get_cfg("list_words", default=[])
 # ── Embedding recall + cross-encoder reranker for tool routing ──
 _tool_embeddings: dict[str, list[float]] = {}
 _cross_encoder: CrossEncoder | None = None
-_cross_encoder_ready = False
-
-def ensure_cross_encoder():
-    """Eagerly load the cross-encoder model to avoid cold-start latency on first query.And is called on appp startup"""
-    global _cross_encoder, _cross_encoder_ready
-    if not _cross_encoder_ready:
-        _cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
-        _cross_encoder_ready = True
-
-def get_cross_encoder():
-    """Fallback getter for cross-encoder, in case ensure_cross_encoder() was not called on startup."""
-    ensure_cross_encoder()
-    return _cross_encoder
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
@@ -52,13 +39,13 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 def _build_tool_embeddings():
     if _tool_embeddings:
         return
-    for tool_name, meta in TOOL_INTENT_REGISTRY.items():
-        text = f"{meta['description']} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
-        _tool_embeddings[tool_name] = embedding_model.embed_query(text)
-
-
-# Eager load cross-encoder at import time (not lazy — avoids cold-start latency on first query)
-# _cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
+    try:
+        for tool_name, meta in TOOL_INTENT_REGISTRY.items():
+            text = f"{meta['description']} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
+            _tool_embeddings[tool_name] = embedding_model.embed_query(text)
+    except Exception as e:
+        print(f"[WARN] Failed to build tool embeddings: {e}")
+        _tool_embeddings.clear()
 
 def get_cross_encoder():
     global _cross_encoder
@@ -265,6 +252,8 @@ async def translator_node(state: MainState) -> MainState:
 def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     """Embedding recall + cross-encoder reranker for tool selection."""
     if not _tool_embeddings:
+        _build_tool_embeddings()
+    if not _tool_embeddings:
         return []
 
     try:
@@ -289,7 +278,12 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
         desc = f"{tool_name}: {meta.get('description', '')}. Aliases: {', '.join(meta.get('aliases', []))}"
         pairs.append((query_part, desc))
 
-    rerank_scores = get_cross_encoder().predict(pairs)
+    try:
+        rerank_scores = get_cross_encoder().predict(pairs)
+    except Exception as e:
+        print(f"[RERANK ERROR] Cross-encoder predict failed: {e}")
+        return []
+
     reranked = [(top_k[i][0], float(rerank_scores[i])) for i in range(len(top_k))]
     reranked.sort(key=lambda x: x[1], reverse=True)
 
@@ -786,8 +780,8 @@ def ns_to_sec(value):
 def log_token_usage(response, label: str):
     meta = getattr(response, "response_metadata", {}) or {}
     tu = meta.get("token_usage", {}) or {}
-    prompt_tokens = tu.get("prompt_tokens") or meta.get("prompt_eval_count", 0)
-    output_tokens = tu.get("completion_tokens") or meta.get("eval_count", 0)
+    prompt_tokens = tu.get("prompt_tokens") if tu.get("prompt_tokens") is not None else meta.get("prompt_eval_count", 0)
+    output_tokens = tu.get("completion_tokens") if tu.get("completion_tokens") is not None else meta.get("eval_count", 0)
     model = tu.get("model") or meta.get("model", "unknown")
     model_provider = meta.get("model_provider", "")
     tag = f"[TOKENS] {label}"
@@ -879,6 +873,8 @@ def extract_date_ranges_with_positions(query: str) -> list[dict]:
             "to": matches[i + 1].group(),
             "pos": matches[i].start(),
         })
+    if len(matches) % 2:
+        print(f"[WARN] Dropped unpaired date: {matches[-1].group()}")
     return ranges
 
 
@@ -1218,7 +1214,7 @@ async def chat_model_node(state: MainState):
                 # Clear term if it looks like a filter expression, not a product name
                 term = args.get("term")
                 if term and isinstance(term, str):
-                    if re.search(r"\b(lt|gt|lte|gte|eq|ne|in|\$lt|\$gt|<=|>=|!=)\b", term):
+                    if re.search(r"\b(lt|gt|lte|gte|eq|ne|in|\$lt|\$gt)\b|(?:<=|>=|!=)", term):
                         args["term"] = ""
 
             worker_has = {}
@@ -1227,7 +1223,7 @@ async def chat_model_node(state: MainState):
                 for dk in ("from_date", "to_date"):
                     v = args.get(dk)
 
-                    if v and re.match(r"\d{4}-\d{2}-\d{2}", str(v)):
+                    if v and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(v)):
                         worker_has[dk] = v
 
             # Discard hallucinated dates: if LLM provided dates but neither the query
@@ -1425,32 +1421,31 @@ async def chat_model_node(state: MainState):
             # "less than 0" / "0 se kam" / "< 0" with a field keyword → {field: {lt: 0}}.
             # And "positive" / "greater than 0" / "more than 0" / "0 se jyada" → {field: {gt: 0}}.
             # Applies to fields that look numeric (contain Qty/Value/Rate/Amount/Balance/Count/Gst/St).
-            if "filters" not in new_args:
-                # Generic numeric threshold: "N se jada/kam", "N se upar/less"
-                num_compare = None
-                compare_op = None
-                num_m = re.search(r"(\d+(?:\.\d+)?)\s+se\s+(jyada|jada|zada|upar|kam|less|km)\b", combined_q, re.IGNORECASE)
-                if num_m:
-                    num_compare = float(num_m.group(1))
-                    compare_op = "gt" if num_m.group(2).lower() in ("jyada", "jada", "upar", "zada") else "lt"
-                is_lt_zero = not num_m and bool(re.search(
-                    r"\bnegative\b|\bless\s+th[ae]n\s+0\b|<\s*0\b|\bbelow\s+0\b|0\s+se\s+kam\b",
-                    combined_q,
-                ))
-                is_gt_zero = not num_m and bool(re.search(
-                    r"\bpositive\b|\bgreater\s+th[ae]n\s+0\b|\bmore\s+th[ae]n\s+0\b|>\s*0\b|\babove\s+0\b|0\s+se\s+jyada\b|0\s+se\s+upar\b",
-                    combined_q,
-                ))
-                if is_lt_zero or is_gt_zero or (num_compare is not None and compare_op):
-                    operator = compare_op or ("gt" if is_gt_zero else "lt")
-                    threshold = num_compare if num_compare is not None else 0
-                    for field, aliases in TOOL_INTENT_REGISTRY.get(name, {}).get("field_aliases", {}).items():
-                        if not re.search(r"(Qty|Value|Rate|Amount|Balance|Count|gst|igst|cgst|sgst|cess)", field, re.IGNORECASE):
-                            continue
-                        for alias in aliases:
-                            if (" " in alias and alias in combined_q) or re.search(rf"\b{re.escape(alias)}\b", combined_q):
-                                new_args.setdefault("filters", {})[field] = {operator: threshold}
-                                break
+            # Generic numeric threshold: "N se jada/kam", "N se upar/less"
+            num_compare = None
+            compare_op = None
+            num_m = re.search(r"(\d+(?:\.\d+)?)\s+se\s+(jyada|jada|zada|upar|kam|less|km)\b", combined_q, re.IGNORECASE)
+            if num_m:
+                num_compare = float(num_m.group(1))
+                compare_op = "gt" if num_m.group(2).lower() in ("jyada", "jada", "upar", "zada") else "lt"
+            is_lt_zero = not num_m and bool(re.search(
+                r"\bnegative\b|\bless\s+th[ae]n\s+0\b|<\s*0\b|\bbelow\s+0\b|0\s+se\s+kam\b",
+                combined_q,
+            ))
+            is_gt_zero = not num_m and bool(re.search(
+                r"\bpositive\b|\bgreater\s+th[ae]n\s+0\b|\bmore\s+th[ae]n\s+0\b|>\s*0\b|\babove\s+0\b|0\s+se\s+jyada\b|0\s+se\s+upar\b",
+                combined_q,
+            ))
+            if is_lt_zero or is_gt_zero or (num_compare is not None and compare_op):
+                operator = compare_op or ("gt" if is_gt_zero else "lt")
+                threshold = num_compare if num_compare is not None else 0
+                for field, aliases in TOOL_INTENT_REGISTRY.get(name, {}).get("field_aliases", {}).items():
+                    if not re.search(r"(Qty|Value|Rate|Amount|Balance|Count|gst|igst|cgst|sgst|cess)", field, re.IGNORECASE):
+                        continue
+                    for alias in aliases:
+                        if (" " in alias and alias in combined_q) or re.search(rf"\b{re.escape(alias)}\b", combined_q):
+                            new_args.setdefault("filters", {})[field] = {operator: threshold}
+                            break
 
             # Normalize malformed filter keys: LLM sometimes sends
             # "closingQty gt": "2" (space) or "name.contains": "Bangalore" (dot)
@@ -1512,12 +1507,10 @@ async def chat_model_node(state: MainState):
                 if llm_sent_fields
                 else (repair.get("default_fields") or [])
             )
-            has_strict_marker = bool(re.search(r'\b(sirf|only|just|bas)\b', combined_q))
-            if not has_strict_marker:
-                for kw, fld in repair.get("field_triggers", {}).items():
-                    match = kw in combined_q if " " in kw else bool(re.search(rf'\b{re.escape(kw)}\b', combined_q))
-                    if match and fld not in fields:
-                        fields.append(fld)
+            for kw, fld in repair.get("field_triggers", {}).items():
+                match = kw in combined_q if " " in kw else bool(re.search(rf'\b{re.escape(kw)}\b', combined_q))
+                if match and fld not in fields:
+                    fields.append(fld)
             if fields:
                 new_args["fields"] = fields
 
@@ -1557,7 +1550,10 @@ async def chat_model_node(state: MainState):
                         cat_val = new_args.pop(cat_key)
                         break
                 if cat_val:
-                    new_args.setdefault("filters", {})["category"] = cat_val
+                    if isinstance(cat_val, list):
+                        new_args.setdefault("filters", {})["category"] = ",".join(cat_val)
+                    else:
+                        new_args.setdefault("filters", {})["category"] = cat_val
 
             if name == "get_gst_summary" or name in (
                 "get_tds_outstanding",
@@ -1678,7 +1674,13 @@ async def chat_model_node(state: MainState):
                     final_calls.append(call)
 
             tool_calls = final_calls
-            response.__dict__["tool_calls"] = tool_calls
+            response = AIMessage(
+                content=response.content or "",
+                tool_calls=tool_calls,
+                additional_kwargs=response.additional_kwargs,
+                response_metadata=response.response_metadata,
+                id=response.id,
+            )
 
             print(f"[FIX] Extracted {len(tool_calls)} tool call(s) from bind_tools")
 
@@ -1713,7 +1715,7 @@ async def chat_model_node(state: MainState):
         return {
             "messages": [
                 HumanMessage(content=state.get("user_query", "")),
-                AIMessage(content=f"Chat model error: {str(e)}"),
+                AIMessage(content="Chat model error: The model encountered an issue while processing your request. Please try again."),
             ],
             "memory_answer": "",
             "loop_count": state.get("loop_count", 0) + 1,
@@ -1890,14 +1892,22 @@ def apply_final_postprocessing(
     canonical_query: str = "",
 ) -> dict:
     """
-    Final deterministic cleanup after tools return data.
-    This should not invent data.
-    It only cleans/organizes existing tool results.
+    Final deterministic cleanup — deduplicate records within each tool result.
     """
     if not isinstance(final_data, dict):
         return final_data
 
-    combined_query = f"{original_query or ''} {canonical_query or ''}".strip()
+    import json as _json
+    for tool_name, records in final_data.items():
+        if isinstance(records, list):
+            seen = set()
+            deduped = []
+            for r in records:
+                key = _json.dumps(r, sort_keys=True) if isinstance(r, dict) else str(r)
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(r)
+            final_data[tool_name] = deduped
 
     return final_data
 def infer_requested_fields(user_query: str, tool_name: str) -> list[str]:
@@ -2027,8 +2037,6 @@ def filter_gst_records_by_query(records: list[dict], query: str) -> list[dict]:
     if not requested:
         return records
 
-    requested_set = set(requested)
-
     has_category = any(isinstance(r,dict) and "category" in r for r in records)
     if not has_category:
         return records
@@ -2119,7 +2127,7 @@ async def deterministic_final_node(state: MainState):
             records = [records]
 
         if isinstance(parsed, dict):
-            total_rows = max(total_rows, parsed.get("total_rows", 0))
+            total_rows += parsed.get("total_rows", 0) or 0
         if tool_name == "get_gst_summary":
             records = filter_gst_records_by_query(
                 records,
@@ -2342,7 +2350,8 @@ async def response_generation_node(state: MainState):
     # Fallback: if detected_language is english/mixed but query has Hinglish words, override
     if detected_language not in ("hinglish", "hindi"):
         hinglish_words = {"batao", "chaia", "wale", "ka", "ki", "kya", "hai", "kitne", "konse", "konsa", "karli", "hua", "hue"}
-        if any(w in original_query.lower().split() for w in hinglish_words):
+        tokens = re.findall(r"\w+", original_query.lower())
+        if any(w in tokens for w in hinglish_words):
             detected_language = "hinglish"
 
     previous_summary = state.get("summary", "") or ""
@@ -2390,8 +2399,8 @@ async def response_generation_node(state: MainState):
         "4. Do NOT use headers like '--- Customers ---' or '--- Results ---' or any section labels.\n"
         "5. Do NOT use bullet points or numbered lists unless the user explicitly asked for a list.\n"
         "6. Keep the reply to 1-4 short sentences.\n"
-        "7. If the TOOL RESULTS contain a '__note' saying records are hidden."
-        "you do NOT have access to change those records. DO NOT guess or invent them."
+        "7. If the TOOL RESULTS contain a '__note' saying records are hidden. "
+        "you do NOT have access to change those records. DO NOT guess or invent them. "
         "Tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
     )
 

@@ -1,10 +1,12 @@
 import json
+import os
 import uuid
 import threading
 from datetime import datetime, timezone
 from typing import Optional
 from langchain_core.messages import message_to_dict, messages_from_dict
 
+_sessions_file = "sessions.json"
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
 
@@ -13,8 +15,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _save():
+    with _lock:
+        with open(_sessions_file, "w") as f:
+            json.dump(_sessions, f, default=str)
+
+
+def _load():
+    global _sessions
+    if os.path.exists(_sessions_file):
+        with open(_sessions_file) as f:
+            _sessions = json.load(f)
+
+
 def init_db():
-    pass
+    _load()
 
 
 def create_session(name: str = "", session_id: str = "") -> dict:
@@ -30,7 +45,28 @@ def create_session(name: str = "", session_id: str = "") -> dict:
     }
     with _lock:
         _sessions[sid] = data
+    _save()
     return dict(data)
+
+
+def get_or_create_session(session_id: str) -> dict:
+    """Atomically get an existing session or create a new one."""
+    with _lock:
+        data = _sessions.get(session_id)
+        if data is not None:
+            return dict(data)
+        now = _now()
+        _sessions[session_id] = {
+            "id": session_id,
+            "name": "",
+            "summary": "",
+            "messages": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = dict(_sessions[session_id])
+    _save()
+    return result
 
 
 def list_sessions() -> list[dict]:
@@ -78,14 +114,19 @@ def save_session(session_id: str, messages: list, summary: str = ""):
                 "created_at": now,
                 "updated_at": now,
             }
+    _save()
 
 
 def delete_session(session_id: str) -> bool:
     with _lock:
         if session_id in _sessions:
             del _sessions[session_id]
-            return True
-        return False
+            deleted = True
+        else:
+            deleted = False
+    if deleted:
+        _save()
+    return deleted
 
 
 def rename_session(session_id: str, name: str) -> bool:
@@ -96,7 +137,8 @@ def rename_session(session_id: str, name: str) -> bool:
             return False
         data["name"] = name
         data["updated_at"] = now
-        return True
+    _save()
+    return True
 
 
 def load_messages(session_id: str) -> list:
