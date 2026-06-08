@@ -2,7 +2,11 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
-API_BASE = "http://127.0.0.1:8000"
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+API_BASE = os.getenv("BACKEND_URL")
 
 st.set_page_config(page_title="Chapter1 ERP Assistant", page_icon="💼", layout="wide")
 

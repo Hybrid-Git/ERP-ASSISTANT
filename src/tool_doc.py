@@ -39,7 +39,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "customer",
         "multi_call_ok": True,
         "description": "Search customers or parties and return id, name, opening balance and opening type.",
-        "prompt_tips": "Brand+city (e.g. Nykaa Bangalore): search=brand, filters=name.contains city. City/location alone also works: search=city_name.",
+        "prompt_tips": "City/location alone: use search=city_name, NOT filters.city. Brand+city (e.g. Nykaa Bangalore): search=brand, filters=name.contains city. Customer name: search=name.",
         "aliases": [
             "customer", "customers", "party", "parties", "client", "buyer", "grahak",
             "customer_report",
@@ -107,7 +107,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "stock",
         "multi_call_ok": True,
         "description": "Fetch stock and inventory levels using product name, SKU or HSN; returns closing quantity/value, low stock and out-of-stock details.",
-        "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt. Can call w/ sort descending for max, ascending for min.",
+        "prompt_tips": "HSN: term=HSN, filters=hsnCode. Low stock: low_stock_only=true. Qty compare: closingQty lt/gt. Can call w/ sort descending for max, ascending for min. VALID filters ONLY: hsnCode, lowStockOnly. DO NOT copy filters from GST/customer tools.",
         "aliases": [
             "stock", "inventory", "product", "products", "item", "items",
             "maal", "jaththo", "satha", "stock_levels", "stock_report",
@@ -146,7 +146,7 @@ TOOL_INTENT_REGISTRY = {
     "get_gst_summary": {
         "category": "gst_report",
         "description": "Fetch GST summary/report by date range; supports B2B, B2C, exports, nil/exempt, credit notes and grand total rows.",
-        "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nilRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter.",
+        "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nilRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter. NO search/term/limit params — these do NOT exist for this tool.",
         "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge"],
         "keywords": [
             "b2b", "b2c", "b2c large", "b2clarge", "b2c small", "b2csmall",

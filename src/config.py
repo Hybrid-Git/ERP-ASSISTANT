@@ -1,60 +1,54 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
-import yaml
+import os  # noqa: E402
+import yaml  # noqa: E402
 # from langchain_ollama import OllamaEmbeddings, ChatOllama
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings  # noqa: E402
 
 embedding_model = OpenAIEmbeddings(
-    model="bge-m3:latest",
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
+    model=os.getenv("EMB_MODEL"),
+    base_url= os.getenv("BASE_URL"),
+    api_key= os.getenv("MODEL_API_KEY"),
     timeout=180,
     check_embedding_ctx_length=False,
 )
 
 normalizer_llm = ChatOpenAI(
-    model="qwen3:4b",
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
+    model=os.getenv("TRANS_LLM_MODEL"),
+    base_url= os.getenv("BASE_URL"),
+    api_key= os.getenv("MODEL_API_KEY"),
     temperature=0.0,
-    max_tokens=1024,   # OpenAI-style replacement for num_predict
-    timeout=180,
+    max_tokens=256,
+    timeout=60,
 
-    # Ollama/OpenAI-compatible extra parameters
     extra_body={
         "keep_alive": "30m",
-        "think": False,   # closest equivalent of reasoning=False for Qwen thinking models
     },
 )
 llm = ChatOpenAI(
-    model="qwen3:latest",
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
+    model= os.getenv("LLM_MODEL") ,
+    base_url= os.getenv("BASE_URL"),
+    api_key= os.getenv("MODEL_API_KEY"),
     temperature=0.0,
-    max_tokens=2048,   # OpenAI-style replacement for num_predict
-    timeout=180,
+    max_tokens=4096,
+    timeout=120,
 
-    # Ollama/OpenAI-compatible extra parameters
     extra_body={
         "keep_alive": "30m",
-        "think": False,   # closest equivalent of reasoning=False for Qwen thinking models
     },
 )
 summary_llm = ChatOpenAI(
-        model="qwen3:latest",
-        base_url="http://localhost:11434/v1",
-        api_key="ollama",
-        temperature=0.0,
-        max_tokens=8192,   # OpenAI-style replacement for num_predict
-        timeout=180,
+    model= os.getenv("SUMMARY_LLM_MODEL") ,
+    base_url= os.getenv("BASE_URL"),
+    api_key= os.getenv("MODEL_API_KEY"),
+    temperature=0.0,
+    max_tokens=4096,
+    timeout=120,
 
-        # Ollama/OpenAI-compatible extra parameters
-        extra_body={
-            "keep_alive": "30m",
-            "think": False,   # closest equivalent of reasoning=False for Qwen thinking models
-        },
+    extra_body={
+        "keep_alive": "30m",
+    },
 )
 
 print("LLM and embedding model initialised!")

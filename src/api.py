@@ -3,7 +3,7 @@ import requests
 from typing import Any, Optional
 import time
 from src.config import CHP1_API_BASE_URL, CHP1_API_TIMEOUT,CHP1_API_TOKEN
-
+import httpx
 
 def build_url(endpoint: str) -> str:
     base_url = CHP1_API_BASE_URL.rstrip("/")
@@ -18,7 +18,7 @@ def parse_response(response: requests.Response) -> dict[str, Any]:
             "raw_text": response.text[:1000]
         }
 
-    if not response.ok:
+    if not response.is_success:
         return {
             "success": False,
             "status_code": response.status_code,
@@ -52,7 +52,7 @@ def parse_response(response: requests.Response) -> dict[str, Any]:
         "raw_response": payload,
     }
 @traceable(name="chapter1_api_post",run_type="tool")
-def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+async def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     url = build_url(endpoint)
     final_body = body or {}
 
@@ -62,12 +62,21 @@ def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict[str, 
 
         request_start = time.perf_counter()
 
-        response = requests.post(
-                                url,    
-                                json=final_body,
-                                headers={"Authorization": f"{CHP1_API_TOKEN}"},
-                                timeout=CHP1_API_TIMEOUT,
-                            )
+        async with httpx.AsyncClient(timeout=CHP1_API_TIMEOUT) as client:
+            response = await client.post(
+                url,
+                json=final_body,
+                headers={"Authorization": f"{CHP1_API_TOKEN}"}
+            )
+
+
+
+        # response = requests.post(
+        #                         url,    
+        #                         json=final_body,
+        #                         headers={"Authorization": f"{CHP1_API_TOKEN}"},
+        #                         timeout=CHP1_API_TIMEOUT,
+        #                     )
 
         request_duration = time.perf_counter() - request_start
 
@@ -83,7 +92,7 @@ def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict[str, 
 
         return result
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {
             "success": False,
             "status_code": None,
@@ -95,7 +104,7 @@ def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict[str, 
             "error": "API request timed out",
         }
 
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         return {
             "success": False,
             "status_code": None,

@@ -7,7 +7,7 @@ from src.config import COMPANY_ID
 import time
 import copy
 from collections import OrderedDict
-
+import asyncio
 CUSTOMER_ENDPOINT = "/customers"
 CUSTOMER_LEDGER_ENDPOINT = "/customers/ledger"
 STOCK_LEVELS_ENDPOINT = "/inventory/stock"
@@ -24,7 +24,7 @@ def make_cache_key(endpoint: str, body: dict) -> str:
     return f"{endpoint}::{json.dumps(body, sort_keys=True, ensure_ascii=False)}"
 
 
-def cached_api_post(endpoint: str, body: dict) -> dict:
+async def cached_api_post(endpoint: str, body: dict) -> dict:
     """
     Caches API responses by endpoint + body.
     Important: returns deep copies because project_result mutates result["data"].
@@ -47,7 +47,7 @@ def cached_api_post(endpoint: str, body: dict) -> dict:
         api_cache.pop(cache_key, None)
 
     print(f"[CACHE MISS] {endpoint}")
-    result = api_post(endpoint, body=body)
+    result = await api_post(endpoint, body=body)
 
     api_cache[cache_key] = {
         "cached_at": now,
@@ -160,7 +160,11 @@ def match_filter(actual, expected):
     except (ValueError, TypeError):
         pass
 
-    # return exp_str == act_str or (exp_str and exp_str in act_str)
+    # Comma-separated expected values → OR match (e.g. "b2cSmall,b2cLarge")
+    if isinstance(expected, str) and "," in expected:
+        parts = [p.strip() for p in expected.split(",")]
+        return normalize_value(actual) in [normalize_value(p) for p in parts]
+
     return exp_str == act_str
 
 
@@ -368,7 +372,7 @@ def append_report_summary_row(result: dict, report_type: str) -> dict:
 # TOOLS
 # ============================================================
 @tool
-def get_gst_summary(
+async def get_gst_summary(
     from_date: str,
     to_date: str,
     fields: Optional[Any] = None,
@@ -387,16 +391,16 @@ def get_gst_summary(
     if filters:
         body["filters"] = filters
 
-    result = cached_api_post(GST_SUMMARY_ENDPOINT, body=body)
+    result = await cached_api_post(GST_SUMMARY_ENDPOINT, body=body)
     result = flatten_gst_summary_result(result)
-    result = project_result(result, fields=fields, filters=None)
+    result = project_result(result, fields=fields, filters=filters)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
 @tool
-def get_tds_outstanding(
+async def get_tds_outstanding(
     from_date: str = "",
     to_date: str = "",
     page: int = 1,
@@ -419,15 +423,15 @@ def get_tds_outstanding(
     if filters:
         body["filters"] = filters
 
-    result = cached_api_post(TDS_OUTSTANDING_ENDPOINT, body=body)
+    result = await cached_api_post(TDS_OUTSTANDING_ENDPOINT, body=body)
     result = append_report_summary_row(result, "tdsOutstanding")
-    result = project_result(result, fields=fields, filters=None)
+    result = project_result(result, fields=fields, filters=filters)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 @tool
-def get_tcs_outstanding(
+async def get_tcs_outstanding(
     from_date: str = "",
     to_date: str = "",
     page: int = 1,
@@ -450,14 +454,14 @@ def get_tcs_outstanding(
     if filters:
         body["filters"] = filters
 
-    result = cached_api_post(TCS_OUTSTANDING_ENDPOINT, body=body)
+    result = await cached_api_post(TCS_OUTSTANDING_ENDPOINT, body=body)
     result = append_report_summary_row(result, "tcsOutstanding")
-    result = project_result(result, fields=fields, filters=None)
+    result = project_result(result, fields=fields, filters=filters)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 @tool
-def get_customer(
+async def get_customer(
     search: Optional[str] = "",
     limit: int = 10,
     fields: Optional[Any] = None,
@@ -500,15 +504,15 @@ def get_customer(
     if filters:
         body["filters"] = filters
 
-    result = cached_api_post(CUSTOMER_ENDPOINT, body=body)
-    result = project_result(result, fields=fields, filters=None)
+    result = await cached_api_post(CUSTOMER_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
 @tool
-def get_customer_ledger(
+async def get_customer_ledger(
     customer_id: int,
     from_date: str = "",
     to_date: str = "",
@@ -550,7 +554,7 @@ def get_customer_ledger(
     if filters:
         body["filters"] = filters
 
-    result = cached_api_post(CUSTOMER_LEDGER_ENDPOINT, body=body)
+    result = await cached_api_post(CUSTOMER_LEDGER_ENDPOINT, body=body)
 
     if not isinstance(result, dict) or not result.get("success", False):
         print("[TOOL OUTPUT]", result)
@@ -584,7 +588,7 @@ def get_customer_ledger(
 
 
 @tool
-def get_stock_levels(
+async def get_stock_levels(
     from_date: Optional[str] = "",
     to_date: Optional[str] = "",
     low_stock_only: bool = False,
@@ -637,7 +641,7 @@ def get_stock_levels(
     if filters:
         body["filters"] = filters
 
-    result = cached_api_post(STOCK_LEVELS_ENDPOINT, body=body)
+    result = await cached_api_post(STOCK_LEVELS_ENDPOINT, body=body)
 
     raw_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
     print(f"[STOCK DEBUG] After cached_api_post: raw_data_len={raw_len}, fields={fields}")
@@ -650,7 +654,7 @@ def get_stock_levels(
             fields = fields + ["isLowStock"]
         elif isinstance(fields, dict):
             fields = {**fields, "isLowStock": True}
-    result = project_result(result, fields=fields, filters=None)
+    result = project_result(result, fields=fields, filters=filters)
     projected_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
     print(f"[STOCK DEBUG] After project_result: data_len={projected_len}, count={result.get('count')}")
 

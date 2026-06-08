@@ -57,33 +57,21 @@ def get_cross_encoder():
 def now():
     return time.perf_counter()
 
-TRANSLATOR_PROMPT = """Convert Hinglish/Hindi/Gujarati queries to clean English JSON. Keep output brief — only the JSON.
+TRANSLATOR_PROMPT = """Normalize Hinglish/Hindi/Gujarati → clean English JSON.
 
-SCHEMA: {"canonical_query":"...","document_type":"...","language":"...","confidence":"high|medium|low"}
+SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low"}
 
-ERP WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, rakam=amount, baki=outstanding, kam=less, zyada=greater, dikhao=show, batao=show, aur=and, kitne=how_many, kitna=how_much, hai=is_are, ho=is_are, kya=what, konse=which, konsa=which, jiska=which_one, kyu=why, chaia=need, chahiye=need, nahi=not, hamare=our, mera=my, uska=his_her, uski=his_her, wala=with, wale=with
+WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, rakam=amount, baki=outstanding, kam=less, zyada=greater, dikhao/batao=show, aur=and, kitne/kitna=how_many/much, hai/ho=is_are, kya=what, konse/konsa/jiska=which, kyu=why, chaia/chahiye=need, nahi=not, hamare/mera/uska/uski=our/my/his, wala/wale=with, sari/saari=all
 
-RULES:
-- Preserve IDs, HSN, dates, names exactly
-- If clean English → language="english", query as-is
-- If query is a bare number/name with no verb, treat as lookup
-- document_type: sales_invoice | purchase_invoice | customer | product | unknown_invoice | general
+RULES: Preserve IDs/HSN/dates/names. Clean English → language="english", query unchanged. Bare number/name → treat as lookup.
 
 EXAMPLES:
 Q: A/0326/C0077 sales bill ka customer name batao
-A: {"canonical_query": "Show customer name for sales invoice A/0326/C0077", "document_type": "sales_invoice", "language": "hinglish", "confidence": "high"}
-
-Q: muje mars ke customer ka detail chaia
-A: {"canonical_query": "Show customer details for mars", "document_type": "customer", "language": "hinglish", "confidence": "medium"}
-
+A: {"canonical_query":"Show customer name for sales invoice A/0326/C0077","document_type":"sales_invoice","language":"hinglish","confidence":"high"}
 Q: kitne products hai inventory mai
-A: {"canonical_query": "How many products in inventory", "document_type": "product", "language": "hinglish", "confidence": "high"}
-
-Q: jiska stock 55 ho
-A: {"canonical_query": "Which product has closing stock 55", "document_type": "product", "language": "hinglish", "confidence": "medium"}
-
+A: {"canonical_query":"How many products in inventory","document_type":"product","language":"hinglish","confidence":"high"}
 Q: kyu nahi mila
-A: {"canonical_query": "Why no results found", "document_type": "general", "language": "hinglish", "confidence": "high"}"""
+A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high"}"""
 def is_plain_english_query(query: str) -> bool:
     """
     Returns True when the query looks like normal English.
@@ -757,9 +745,11 @@ def build_system_prompt(
             if meta and meta.get("prompt_tips"):
                 lines.append(f"  {tool_name}: {meta['prompt_tips']}")
     lines.append("")
-    lines.append("Example:")
-    lines.append("  user: show me b2b invoices for april 2024")
-    lines.append("  assistant: (tool call with from_date=2024-04-01, to_date=2024-04-30, categories=[b2b])")
+    lines.append("PARAMETER RULES:")
+    lines.append("  1. Tools with `search`/`term`: put name/city/product lookups there, NEVER in `filters`.")
+    lines.append("  2. `filters` is for exact matches only: hsnCode, category, lowStockOnly, etc.")
+    lines.append("  3. Tools without `search`/`term` (gst_summary, tds, tcs): `filters` is correct usage.")
+    lines.append("  4. CRITICAL — NEVER copy parameters between different tools. Each tool has its own unique set of valid parameters. What works for one tool will NOT work for another.")
 
     return "\n".join(lines)
 
