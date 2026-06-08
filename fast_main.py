@@ -416,11 +416,11 @@ async def run_graph_query(
 
 @app.on_event("startup")
 async def startup_event():
-    try:
-        session_store.init_db()
-        print("Session store initialized.")
-    except Exception as e:
-        print("Session store init failed:", e)
+    # try:
+    #     session_store.init_db()
+    #     print("Session store initialized.")
+    # except Exception as e:
+    #     print("Session store init failed:", e)
 
     try:
         print("FastAPI started. Graph already built. Warming up worker LLM...")

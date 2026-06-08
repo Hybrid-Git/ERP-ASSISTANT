@@ -2,4 +2,4 @@ venv/
 .env
 chroma_db
 __pycache__
-
+sessions.json

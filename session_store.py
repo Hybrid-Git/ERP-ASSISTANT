@@ -1,12 +1,12 @@
-import json
-import os
+# import json
+# import os
 import uuid
 import threading
 from datetime import datetime, timezone
 from typing import Optional
 from langchain_core.messages import message_to_dict, messages_from_dict
 
-_sessions_file = "sessions.json"
+# _sessions_file = "sessions.json"
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
 
@@ -15,21 +15,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _save():
-    with _lock:
-        with open(_sessions_file, "w") as f:
-            json.dump(_sessions, f, default=str)
+# def _save():
+#     with _lock:
+#         with open(_sessions_file, "w") as f:
+#             json.dump(_sessions, f, default=str)
 
 
-def _load():
-    global _sessions
-    if os.path.exists(_sessions_file):
-        with open(_sessions_file) as f:
-            _sessions = json.load(f)
+# def _load():
+#     global _sessions
+#     if os.path.exists(_sessions_file):
+#         with open(_sessions_file) as f:
+#             _sessions = json.load(f)
 
 
-def init_db():
-    _load()
+# def init_db():
+#     _load()
 
 
 def create_session(name: str = "", session_id: str = "") -> dict:
@@ -45,7 +45,7 @@ def create_session(name: str = "", session_id: str = "") -> dict:
     }
     with _lock:
         _sessions[sid] = data
-    _save()
+    # _save()
     return dict(data)
 
 
@@ -65,7 +65,7 @@ def get_or_create_session(session_id: str) -> dict:
             "updated_at": now,
         }
         result = dict(_sessions[session_id])
-    _save()
+    # _save()
     return result
 
 
@@ -114,7 +114,7 @@ def save_session(session_id: str, messages: list, summary: str = ""):
                 "created_at": now,
                 "updated_at": now,
             }
-    _save()
+    # _save()
 
 
 def delete_session(session_id: str) -> bool:
@@ -124,8 +124,8 @@ def delete_session(session_id: str) -> bool:
             deleted = True
         else:
             deleted = False
-    if deleted:
-        _save()
+    # if deleted:
+    #     _save()
     return deleted
 
 
@@ -137,7 +137,8 @@ def rename_session(session_id: str, name: str) -> bool:
             return False
         data["name"] = name
         data["updated_at"] = now
-    _save()
+    # _save()
+    
     return True
 
 
