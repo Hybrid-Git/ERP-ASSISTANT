@@ -59,19 +59,23 @@ def now():
 
 TRANSLATOR_PROMPT = """Normalize Hinglish/Hindi/Gujarati → clean English JSON.
 
-SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low"}
+SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low","query_type":"erp_query|conversational|mixed"}
 
 WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, rakam=amount, baki=outstanding, kam=less, zyada=greater, dikhao/batao=show, aur=and, kitne/kitna=how_many/much, hai/ho=is_are, kya=what, konse/konsa/jiska=which, kyu=why, chaia/chahiye=need, nahi=not, hamare/mera/uska/uski=our/my/his, wala/wale=with, sari/saari=all
 
-RULES: Preserve IDs/HSN/dates/names. Clean English → language="english", query unchanged. Bare number/name → treat as lookup.
+RULES:
+- query_type: "conversational" if asking about conversation history (what we discussed, what was asked, recap, etc.), "erp_query" if asking about ERP data (customers/stock/GST/invoices), "mixed" if asking about both history AND data.
+- Preserve IDs/HSN/dates/names. Clean English → language="english", query unchanged. Bare number/name → treat as lookup.
 
 EXAMPLES:
 Q: A/0326/C0077 sales bill ka customer name batao
-A: {"canonical_query":"Show customer name for sales invoice A/0326/C0077","document_type":"sales_invoice","language":"hinglish","confidence":"high"}
+A: {"canonical_query":"Show customer name for sales invoice A/0326/C0077","document_type":"sales_invoice","language":"hinglish","confidence":"high","query_type":"erp_query"}
 Q: kitne products hai inventory mai
-A: {"canonical_query":"How many products in inventory","document_type":"product","language":"hinglish","confidence":"high"}
+A: {"canonical_query":"How many products in inventory","document_type":"product","language":"hinglish","confidence":"high","query_type":"erp_query"}
 Q: kyu nahi mila
-A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high"}"""
+A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high","query_type":"erp_query"}
+Q: hamne sabse pehle kya pucha tha
+A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}"""
 def is_plain_english_query(query: str) -> bool:
     """
     Returns True when the query looks like normal English.
@@ -133,6 +137,37 @@ def extract_json_object(text: str) -> dict:
     except Exception:
         return {}
 
+
+META_QUESTION_PATTERNS_GLOBAL = [
+    r"what (have|did|was|were|is|are) we (discussed?|talked?|said?|done|covered|asked)",
+    r"what (have|did|was|were|is|are) (i|you|we|the) (discussed?|talked?|said?|done|covered|asked).*\b(first|previous|last|pichl|pehle)",
+    r"which (products|items|customers) (have|were) (discussed|talked|mentioned)",
+    r"what (was|were) (discussed|talked|mentioned|said)",
+    r"(summarize|summary|recap) (the |our |this )?(conversation|chat|discussion)",
+    r"conversation (history|so far|till now)",
+    r"kya (baat|discuss|hua|kaha)",
+    r"humne kya (baat|discuss|kiya|kaha|kari)",
+    r"aur\s+usse?\s+pehle",
+    r"(es?|is|us)\s+se?\s+pehle",
+    r"(kiska|kiski|kiske)\s+(id|name|number|details|baat)\s+manga",
+    r"(baat|bat)\s+(hua|hui|kiya|kia|kari|karke?\b)",
+    r"(pichl[ei])\s+(baat|baar|query|sawal|question)",
+    r"\b(shayad|thana|thahi)\b",
+    r"(maine|hamne|humne)\s+(sabse\s+)?(pehle|pahle)\s+kya\s+(pucha|kaha|manga|poocha)",
+    r"what\s+(was|were|did|have)\s+.*?\b(first|pehle|pahle|previous)\b",
+    r"(usse?|is|es)\s+bhi\s+pehle",
+    r"(first|pehle|pahle)\s+(query|question|sawal|baat)",
+    r"(sabse\s+)?(pehle|pahle)\s+(kya\s+)?(pucha|kaha|manga|question|query)",
+]
+
+
+def _classify_query_type(query: str) -> str:
+    if not query:
+        return "unknown"
+    if any(re.search(p, query, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL):
+        return "conversational"
+    return "unknown"
+
 @traceable(name="translator_node", run_type="chain")
 async def translator_node(state: MainState) -> MainState:
     """
@@ -159,6 +194,7 @@ async def translator_node(state: MainState) -> MainState:
                 "translator_confidence": "low",
                 "detected_language": "unknown",
                 "document_type": "unknown",
+                "query_type": "unknown",
             }
 
         if is_plain_english_query(user_query):
@@ -171,6 +207,7 @@ async def translator_node(state: MainState) -> MainState:
                 "translator_confidence": "skipped_english",
                 "detected_language": "english",
                 "document_type": "routeable",
+                "query_type": _classify_query_type(user_query),
             }
 
         if needs_translation(user_query):
@@ -186,20 +223,26 @@ async def translator_node(state: MainState) -> MainState:
             canonical_query = data.get("canonical_query") or user_query
             language = data.get("language", "mixed")
             confidence = data.get("confidence", "medium")
+            query_type = data.get("query_type", "")
 
             print("Original query:", user_query)
             print("Canonical query:", canonical_query)
             print("Detected language:", language)
             print("Translator confidence:", confidence)
+            print("Query type:", query_type)
 
+            # For conversational queries, the canonical_query may hallucinate
+            # entity names. Keep the original query instead.
+            final_canonical = user_query if query_type == "conversational" else canonical_query
             return {
                 "original_query": user_query,
-                "canonical_query": canonical_query,
-                "user_query": canonical_query,
+                "canonical_query": final_canonical,
+                "user_query": final_canonical,
                 "translator_used": True,
                 "translator_confidence": confidence,
                 "detected_language": language,
                 "document_type": data.get("document_type", "unknown"),
+                "query_type": query_type,
             }
 
         if is_routeable_without_translator(user_query):
@@ -212,6 +255,7 @@ async def translator_node(state: MainState) -> MainState:
                 "translator_confidence": "skipped_routeable",
                 "detected_language": "mixed_or_english",
                 "document_type": "routeable",
+                "query_type": _classify_query_type(user_query),
             }
 
         print("Translator skipped: no multilingual normalization needed")
@@ -223,6 +267,7 @@ async def translator_node(state: MainState) -> MainState:
             "translator_confidence": "skipped_no_normalization_needed",
             "detected_language": "english_or_mixed",
             "document_type": "unknown",
+            "query_type": _classify_query_type(user_query),
         }
     except Exception as e:
         print(f"Translator failed: {e}")
@@ -235,6 +280,7 @@ async def translator_node(state: MainState) -> MainState:
             "translator_confidence": "low",
             "detected_language": "unknown",
             "document_type": "unknown",
+            "query_type": "unknown",
         }
 
 def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
@@ -404,27 +450,30 @@ async def semantic_search(state: MainState) -> MainState:
 
         print(f"Query parts for metadata matching: {query_parts}")
 
+        # Fast path: translator already classified this as conversational
+        query_type = (state.get("query_type") or "").strip()
+        if query_type == "conversational":
+            print(f"Translator flagged as conversational — no tool needed: {user_query}")
+            return {
+                "retrieved_tools": [],
+                "selected_tools": [],
+                "query_parts": query_parts,
+                "skip_router": True,
+            }
+
         # Detect meta-questions about the conversation itself — no tool needed
-        META_QUESTION_PATTERNS = [
-            r"what (have|did) we (discussed?|talked?|said?|done|covered|asked)",
-            r"which (products|items|customers) (have|were) (discussed|talked|mentioned)",
-            r"what (was|were) (discussed|talked|mentioned|said)",
-            r"(summarize|summary|recap) (the |our |this )?(conversation|chat|discussion)",
-            r"conversation (history|so far|till now)",
-            r"kya (baat|discuss|hua|kaha)",
-            r"humne kya (baat|discuss|kiya|kaha|kari)",
-            r"aur\s+usse?\s+pehle",                    # "aur usse pehle" — before that
-            r"(es?|is|us)\s+se?\s+pehle",              # "is se pehle" / "es se pehle"
-            r"(kiska|kiski|kiske)\s+(id|name|number|details|baat)\s+manga",  # "kiska id manga"
-            r"(baat|bat)\s+(hua|hui|kiya|kia|kari|karke?\b)",   # "baat hua" / "baat kiya"
-            r"(pichl[ei])\s+(baat|baar|query|sawal|question)",  # "pichli baat"
-            r"\b(shayad|thana|thahi)\b",               # uncertainty markers
-        ]
+        # Check full queries directly (before splitting into parts)
+        full_meta = any(
+            any(re.search(p, q, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL)
+            for q in [original_query, canonical_query] if q
+        )
         # Only skip tools if EVERY part is a memory-only question.
         # Combined queries (e.g., stock question + memory follow-up) must proceed to tool selection.
-        is_pure_meta = len(query_parts) > 0 and all(
-            any(re.search(p, part, re.IGNORECASE) for p in META_QUESTION_PATTERNS)
-            for part in query_parts
+        is_pure_meta = full_meta or (
+            len(query_parts) > 0 and all(
+                any(re.search(p, part, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL)
+                for part in query_parts
+            )
         )
         if is_pure_meta:
             print(f"Meta-question detected — no tool needed: {user_query}")
@@ -497,21 +546,39 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
-        # Fallback: use tool from conversation history (follow-up queries)
-        messages = state.get("messages", [])
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                for tc in msg.tool_calls:
-                    tool_name = tc.get("name")
-                    if tool_name and tool_name in tools_dict:
-                        print(f"No tool match for query. Using tool from conversation history: {tool_name}")
-                        selected_tools = [tool_name]
-                        return {
-                            "retrieved_tools": selected_tools,
-                            "selected_tools": selected_tools,
-                            "query_parts": query_parts,
-                            "skip_router": True,
-                        }
+        # Out-of-domain check: if query is a complete non-ERP question without ERP keywords,
+        # skip conversation history fallback and mark unsupported.
+        OOD_PATTERNS = [
+            r"^(who|what|why|when|where|how)\s+(is|are|was|were|does|do|did|can|could|will|would|shall|should)\s+",
+            r"(tell me about|explain|describe|define)\s",
+        ]
+        raw_queries = [q for q in [original_query, canonical_query] if q]
+        has_erp_kw = any(kw in (original_query or "").lower() for kw in ROUTE_KEYWORDS)
+        is_ood = (
+            not has_erp_kw
+            and any(
+                any(re.search(p, q.strip().lower()) for p in OOD_PATTERNS)
+                for q in raw_queries
+            )
+        )
+        if is_ood:
+            print(f"Out-of-domain question detected (no ERP keywords), skipping history fallback: {user_query}")
+        else:
+            # Fallback: use tool from conversation history (follow-up queries)
+            messages = state.get("messages", [])
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                    for tc in msg.tool_calls:
+                        tool_name = tc.get("name")
+                        if tool_name and tool_name in tools_dict:
+                            print(f"No tool match for query. Using tool from conversation history: {tool_name}")
+                            selected_tools = [tool_name]
+                            return {
+                                "retrieved_tools": selected_tools,
+                                "selected_tools": selected_tools,
+                                "query_parts": query_parts,
+                                "skip_router": True,
+                            }
 
         print("No confident tool match. Marking query unsupported.")
 
@@ -656,6 +723,17 @@ def _build_memory_context(messages: list, max_exchanges: int = 3) -> str:
                     results_str = results_str[:250] + "..."
                 line += f" → {results_str}"
             exchanges.append(line)
+
+        elif isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+            content = getattr(msg, "content", "") or ""
+            if content.strip():
+                user_query = ""
+                for k in range(i - 1, -1, -1):
+                    if isinstance(messages[k], HumanMessage):
+                        user_query = getattr(messages[k], "content", "") or ""
+                        break
+                if user_query:
+                    exchanges.append(f'  Asked: "{user_query}" → Answered: {content[:250]}')
 
         i -= 1
 
@@ -913,6 +991,56 @@ def extract_date_range_for_tool(query: str, date_keywords: list[str]) -> tuple[s
     return nearest_date_range_to_keyword(query, date_keywords)
 
 
+def sanitize_tool_filters(name: str, args: dict) -> dict:
+    """Strip invalid filter keys from any tool call and move values to search/term param.
+    Uses TOOL_INTENT_REGISTRY fields as the set of valid filter keys.
+    Generic across all tools — zero config needed."""
+    meta = TOOL_INTENT_REGISTRY.get(name)
+    if not meta:
+        return args
+
+    filters = args.get("filters")
+    if not filters:
+        return args
+
+    valid_keys = set(meta.get("fields", []))
+    if not valid_keys:
+        return args
+
+    invalid = {}
+    for k in list(filters.keys()):
+        if k not in valid_keys:
+            invalid[k] = filters.pop(k)
+
+    if not invalid:
+        return args
+
+    if not filters:
+        del args["filters"]
+
+    terms = []
+    for k, v in invalid.items():
+        if isinstance(v, str):
+            terms.append(v)
+        elif isinstance(v, (list, tuple)):
+            terms.extend(str(t) for t in v)
+
+    if terms:
+        term_str = " ".join(terms)
+        for search_key in ("search", "term"):
+            if search_key in args:
+                current = args.get(search_key) or ""
+                if current:
+                    current += " "
+                args[search_key] = current + term_str
+                break
+
+    print(f"[SANITIZE] {name}: stripped invalid filter keys {list(invalid.keys())}")
+    if terms:
+        print(f"[SANITIZE] {name}: moved values to search: {' '.join(terms)}")
+    return args
+
+
 def expand_customer_city_calls(base_name: str, base_args: dict, user_query: str) -> list[dict]:
     """Create per-city get_customer calls when multiple known cities, or
     filter by unknown location token when Nykaa + <unknown> is present."""
@@ -1040,6 +1168,19 @@ async def chat_model_node(state: MainState):
                     "loop_count": loop_count + 1,
                 }
 
+            unsupported_reason = state.get("unsupported_reason")
+            if unsupported_reason:
+                reason = unsupported_reason
+                print(f"[CHAT MODEL] Query unsupported, using fallback: {reason}")
+                return {
+                    "messages": [
+                        HumanMessage(content=user_query),
+                        AIMessage(content=reason),
+                    ],
+                    "memory_answer": reason,
+                    "loop_count": loop_count + 1,
+                }
+
             print("[CHAT MODEL] No available tools. Trying conversation memory...")
             previous_summary = state.get("summary", "") or ""
             conversation_context = state.get("conversation_context", {})
@@ -1161,6 +1302,15 @@ async def chat_model_node(state: MainState):
             ]
 
             if not remaining_names:
+                break
+
+            # If LLM chose not to call tools and query is conversational, respect that
+            query_type = (state.get("query_type") or "").strip()
+            is_meta = query_type == "conversational" or any(
+                re.search(p, user_query, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL
+            )
+            if is_meta:
+                print(f"[RETRY] Skipping retry — conversational query: {user_query}")
                 break
 
             print(f"[RETRY] Missing tool calls for: {remaining_names}")
@@ -1636,6 +1786,10 @@ async def chat_model_node(state: MainState):
                 expanded.extend(multi_id_extra)
 
         tool_calls = expanded
+
+        # Generic filter sanitization: strip invalid filter keys, move to search/term
+        sanitized = [call for call in tool_calls if sanitize_tool_filters(call["name"], call["args"]) is not None]
+        tool_calls = sanitized
 
         if tool_calls:
             seen = set()
@@ -2320,7 +2474,7 @@ async def response_generation_node(state: MainState):
     """
     memory_answer = state.get("memory_answer", "")
     if memory_answer:
-        return {"response_text": memory_answer}
+        return {"response_text": memory_answer,"memory_answer":""}
 
     final_response = state.get("final_response", {})
     messages = state.get("messages", [])
