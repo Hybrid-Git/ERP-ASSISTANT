@@ -34,7 +34,6 @@ async def _timeout_iterate(agen, timeout):
 
 from src.graph import graph_builder
 from src.config import llm, normalizer_llm, get_cfg
-from src.nodes import get_cross_encoder
 import session_store
 
 app = FastAPI(
@@ -431,12 +430,6 @@ async def startup_event():
         print(f"Worker LLM warmup completed in {round(elapsed_time, 3)}s")
     except Exception as e:
         print("LLM warmup failed (will load on first query):", e)
-
-    try:
-        get_cross_encoder()
-        print("Cross-encoder model loaded successfully during startup.")
-    except Exception as e:
-        print("Cross-encoder warmup failed (will load lazily on first query):", e)
 
 
 @app.get("/")

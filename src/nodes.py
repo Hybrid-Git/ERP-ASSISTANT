@@ -11,7 +11,6 @@ import uuid
 from langsmith import traceable
 
 import numpy as np
-from sentence_transformers import CrossEncoder # type: ignore
 from src.config import embedding_model
 
 # ── Pipeline config from config.yaml ──
@@ -22,17 +21,13 @@ CONNECTORS = get_cfg("connectors", default=[])
 STOP_TOKENS = set(get_cfg("stop_tokens", default=[]))
 SEGMENT_NEXT_KEYWORDS = get_cfg("segment_next_keywords", default=[])
 TH_EMBEDDING_RECALL_MIN = get_cfg("thresholds", "embedding_recall_min", default=0.3)
-TH_RERANKER_MIN = get_cfg("thresholds", "reranker_min", default=0.5)
 TH_RERANKER_TOP_K = get_cfg("thresholds", "reranker_top_k", default=5)
-CROSS_ENCODER_MODEL = get_cfg("cross_encoder_model", default="cross-encoder/ms-marco-MiniLM-L-6-v2")
 PARTY_WORDS = get_cfg("party_words", default=[])
 NAME_WORDS = get_cfg("name_words", default=[])
 LIST_WORDS = get_cfg("list_words", default=[])
 
 # ── Embedding recall + cross-encoder reranker for tool routing ──
 _tool_embeddings: dict[str, list[float]] = {}
-_cross_encoder: CrossEncoder | None = None
-
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
@@ -46,13 +41,6 @@ def _build_tool_embeddings():
     except Exception as e:
         print(f"[WARN] Failed to build tool embeddings: {e}")
         _tool_embeddings.clear()
-
-def get_cross_encoder():
-    global _cross_encoder
-    if _cross_encoder is None:
-        _cross_encoder = CrossEncoder(CROSS_ENCODER_MODEL)
-    return _cross_encoder
-
 
 def now():
     return time.perf_counter()
@@ -307,24 +295,9 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
         return []
 
     top_k = scores[:TH_RERANKER_TOP_K]
-    pairs = []
-    for tool_name, _ in top_k:
-        meta = registry.get(tool_name, {})
-        desc = f"{tool_name}: {meta.get('description', '')}. Aliases: {', '.join(meta.get('aliases', []))}"
-        pairs.append((query_part, desc))
-
-    try:
-        rerank_scores = get_cross_encoder().predict(pairs)
-    except Exception as e:
-        print(f"[RERANK ERROR] Cross-encoder predict failed: {e}")
-        return []
-
-    reranked = [(top_k[i][0], float(rerank_scores[i])) for i in range(len(top_k))]
-    reranked.sort(key=lambda x: x[1], reverse=True)
-
     result = []
-    for tool_name, score in reranked:
-        if score > TH_RERANKER_MIN:
+    for tool_name,score in top_k:
+        if tool_name not in result:
             result.append(tool_name)
     return result
 
@@ -451,7 +424,6 @@ async def semantic_search(state: MainState) -> MainState:
 
         print(f"Query parts for metadata matching: {query_parts}")
 
-        # Fast path: translator already classified this as conversational
         query_type = (state.get("query_type") or "").strip()
         if query_type == "conversational":
             print(f"Translator flagged as conversational — no tool needed: {user_query}")
@@ -462,14 +434,10 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
-        # Detect meta-questions about the conversation itself — no tool needed
-        # Check full queries directly (before splitting into parts)
         full_meta = any(
             any(re.search(p, q, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL)
             for q in [original_query, canonical_query] if q
         )
-        # Only skip tools if EVERY part is a memory-only question.
-        # Combined queries (e.g., stock question + memory follow-up) must proceed to tool selection.
         is_pure_meta = full_meta or (
             len(query_parts) > 0 and all(
                 any(re.search(p, part, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL)
@@ -485,13 +453,12 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
-        # Greeting detection — respond to pure greetings, ignore for mixed queries with ERP intent
         GREETING_PATTERNS = [
-            r"^(hello|hi|hey|hii|hiii|heyy|holla|namaste|namaskar|vanakkam|howdy|greetings|salam)\s*[!?.]*$",
-            r"^(good\s*morning|good\s*afternoon|good\s*evening|good\s*night|gm|gn)\s*[!?.]*$",
-            r"^(hey\s+there|hi\s+there|hello\s+there)\s*[!?.]*$",
-            r"^(how\s+are\s+(you|u)|how\s+are\s+you\s+doing|how's\s+it\s+going|what's\s+up|wassup|sup)\s*[!?.]*$",
-            r"^(kaise\s+ho|kya\s+haal|kya\s+kar\s+rahe|kya\s+kar\s+raha|kya\s+kar\s+rahi)\s*[!?.]*$",
+            r"^(hello|hi|hey|hii|hiii|heyy|holla|namaste|namaskar|vanakkam|howdy|greetings|salam)\\s*[!?.]*$",
+            r"^(good\\s*morning|good\\s*afternoon|good\\s*evening|good\\s*night|gm|gn)\\s*[!?.]*$",
+            r"^(hey\\s+there|hi\\s+there|hello\\s+there)\\s*[!?.]*$",
+            r"^(how\\s+are\\s+(you|u)|how\\s+are\\s+you\\s+doing|how\\'s\\s+it\\s+going|what\\'s\\s+up|wassup|sup)\\s*[!?.]*$",
+            r"^(kaise\\s+ho|kya\\s+haal|kya\\s+kar\\s+rahe|kya\\s+kar\\s+raha|kya\\s+kar\\s+rahi)\\s*[!?.]*$",
         ]
         full_query = original_query.strip().lower()
         is_greeting = any(re.match(p, full_query) for p in GREETING_PATTERNS)
@@ -504,25 +471,18 @@ async def semantic_search(state: MainState) -> MainState:
                     "selected_tools": [],
                     "query_parts": query_parts,
                     "skip_router": True,
-                    "memory_answer": "Hello! I am your Chapter1 ERP assistant. I can help you with customer details, stock levels, GST summaries, TDS/TCS reports, and more. How can I assist you today?",
+                    "memory_answer": "Hello! I am your Chapter1 ERP assistant...",
                 }
 
         selected_tool_groups: list[list[str]] = []
 
         for part in query_parts:
             tools_for_part = score_tools_via_reranker(part, TOOL_INTENT_REGISTRY)
-
             if tools_for_part:
                 print(f"Reranker tools for part '{part}': {tools_for_part}")
                 selected_tool_groups.append(tools_for_part)
                 continue
 
-            keyword_tools = _keyword_fallback(part)
-            if keyword_tools:
-                print(f"Keyword fallback tools for part '{part}': {keyword_tools}")
-                selected_tool_groups.append(keyword_tools)
-
-        # Optional document_type hint from translator (additive only).
         if document_type in {"product", "inventory", "stock"}:
             selected_tool_groups.append(["get_stock_levels"])
         elif document_type in {"customer", "party"}:
@@ -531,15 +491,19 @@ async def semantic_search(state: MainState) -> MainState:
             selected_tool_groups.append(["get_customer_ledger"])
 
         selected_tools = merge_unique_tools(selected_tool_groups)
+        selected_tools = [t for t in selected_tools if t in tools_dict]
 
-        selected_tools = [
-            tool_name for tool_name in selected_tools
-            if tool_name in tools_dict
-        ]
+        if not selected_tools:
+            has_erp_kw = any(kw in (original_query or "").lower() for kw in ROUTE_KEYWORDS)
+            if has_erp_kw or document_type:
+                selected_tools = list(tools_dict.keys())
+
+        combined = f"{original_query or ''} {canonical_query or ''}"
+        if re.search(r'[A-Z]+/\d{2}-\d{2}/\d{3}', combined):
+            selected_tools = [t for t in selected_tools if t not in ('get_customer',)]
 
         if selected_tools:
             print(f"Final selected tools: {selected_tools}")
-
             return {
                 "retrieved_tools": selected_tools,
                 "selected_tools": selected_tools,
@@ -547,32 +511,25 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
-        # Out-of-domain check: if query is a complete non-ERP question without ERP keywords,
-        # skip conversation history fallback and mark unsupported.
         OOD_PATTERNS = [
-            r"^(who|what|why|when|where|how)\s+(is|are|was|were|does|do|did|can|could|will|would|shall|should)\s+",
-            r"(tell me about|explain|describe|define)\s",
+            r"^(who|what|why|when|where|how)\\s+(is|are|was|were|does|do|did|can|could|will|would|shall|should)\\s+",
+            r"(tell me about|explain|describe|define)\\s",
         ]
         raw_queries = [q for q in [original_query, canonical_query] if q]
         has_erp_kw = any(kw in (original_query or "").lower() for kw in ROUTE_KEYWORDS)
-        is_ood = (
-            not has_erp_kw
-            and any(
-                any(re.search(p, q.strip().lower()) for p in OOD_PATTERNS)
-                for q in raw_queries
-            )
-        )
+        is_ood = (not has_erp_kw and any(
+            any(re.search(p, q.strip().lower()) for p in OOD_PATTERNS) for q in raw_queries
+        ))
         if is_ood:
-            print(f"Out-of-domain question detected (no ERP keywords), skipping history fallback: {user_query}")
+            print(f"Out-of-domain question detected: {user_query}")
         else:
-            # Fallback: use tool from conversation history (follow-up queries)
             messages = state.get("messages", [])
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
                     for tc in msg.tool_calls:
                         tool_name = tc.get("name")
                         if tool_name and tool_name in tools_dict:
-                            print(f"No tool match for query. Using tool from conversation history: {tool_name}")
+                            print(f"Using tool from conversation history: {tool_name}")
                             selected_tools = [tool_name]
                             return {
                                 "retrieved_tools": selected_tools,
@@ -582,19 +539,17 @@ async def semantic_search(state: MainState) -> MainState:
                             }
 
         print("No confident tool match. Marking query unsupported.")
-
         return {
             "retrieved_tools": [],
             "selected_tools": [],
             "query_parts": query_parts,
             "skip_router": True,
             "unsupported": True,
-            "unsupported_reason": "I am an ERP assistant and can only help with questions about customers, stock/inventory, GST summaries, TDS reports, and TCS reports. Please ask a relevant business query.",
+            "unsupported_reason": "I am an ERP assistant...",
         }
 
     except Exception as e:
         print(f"Error in semantic search node: {e}")
-
         return {
             "retrieved_tools": [],
             "selected_tools": [],
@@ -1007,6 +962,16 @@ def sanitize_tool_filters(name: str, args: dict) -> dict:
     valid_keys = set(meta.get("fields", []))
     if not valid_keys:
         return args
+
+    # ── Remap LLM-invented filter keys to real API fields using field_aliases ──
+    field_aliases = meta.get("field_aliases", {})
+    alias_to_real = {}
+    for real_field, aliases in field_aliases.items():
+        for alias in aliases:
+            alias_to_real[alias] = real_field
+    for k in list(filters.keys()):
+        if k not in valid_keys and k in alias_to_real:
+            filters[alias_to_real[k]] = filters.pop(k)
 
     invalid = {}
     for k in list(filters.keys()):
@@ -1681,6 +1646,13 @@ async def chat_model_node(state: MainState):
                 for i, f in enumerate(flds):
                     if f not in field_aliases and f in alias_to_real:
                         flds[i] = alias_to_real[f]
+
+            # ── Also remap filter keys in new_args via same alias lookup ──
+            flds_dict = new_args.get("filters")
+            if flds_dict and isinstance(flds_dict, dict):
+                for k in list(flds_dict.keys()):
+                    if k not in field_aliases and k in alias_to_real:
+                        flds_dict[alias_to_real[k]] = flds_dict.pop(k)
 
             # Merge back worker's explicit non-standard args that repair didn't set
             for k, v in worker_extra.items():

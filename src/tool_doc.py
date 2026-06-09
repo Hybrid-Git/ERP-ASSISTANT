@@ -810,7 +810,7 @@ TOOL_INTENT_REGISTRY = {
             "invoiceType": ["invoice type", "type"],
             "netAmount": ["net amount", "amount", "invoice amount", "total"],
             "taxableAmount": ["taxable amount", "taxable"],
-            "outstanding": ["outstanding", "pending", "due amount", "balance", "remaining", "outstandingAmount"],
+            "outstanding": ["outstanding", "pending", "due amount", "balance", "remaining", "outstandingAmount", "overdueAmount"],
             "paidAmount": ["paid amount", "paid", "payment"],
             "daysOverdue": ["days overdue", "overdue days", "days", "delay", "late"],
             "agingBucket": ["aging bucket", "bucket", "aging", "90+ days", "60-90", "30-60", "1-30"],
