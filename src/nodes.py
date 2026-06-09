@@ -75,7 +75,8 @@ A: {"canonical_query":"How many products in inventory","document_type":"product"
 Q: kyu nahi mila
 A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high","query_type":"erp_query"}
 Q: hamne sabse pehle kya pucha tha
-A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}"""
+A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}
+/no_think"""
 def is_plain_english_query(query: str) -> bool:
     """
     Returns True when the query looks like normal English.
@@ -1202,6 +1203,7 @@ async def chat_model_node(state: MainState):
                     entities = conversation_context.get("entities", [])
                     if entities:
                         mem_prompt += f"Known Entities:\n{json.dumps(entities, indent=2, ensure_ascii=False)}\n"
+                mem_prompt += "\n/no_think"
                 try:
                     mem_resp = await summary_llm.ainvoke([
                         SystemMessage(content=mem_prompt),
@@ -1248,7 +1250,7 @@ async def chat_model_node(state: MainState):
             if not isinstance(msg, SystemMessage)
         ]
 
-        system_prompt = SystemMessage(content=system_prompt_text)
+        system_prompt = SystemMessage(content=system_prompt_text + "\n\n/no_think")
 
         llm_input = (
             [system_prompt]
@@ -2437,6 +2439,7 @@ async def summarization_node(state: MainState):
             f"and any important results or conclusions. "
             f"Do NOT include raw data dumps — just the gist.\n\n"
             f"CONVERSATION:\n"
+            f"/no_think\n"
         )
         summary_input = [SystemMessage(content=summary_prompt)] + messages_to_summarize
         response = await summary_llm.ainvoke(summary_input)
@@ -2543,9 +2546,10 @@ async def response_generation_node(state: MainState):
         "4. Do NOT use headers like '--- Customers ---' or '--- Results ---' or any section labels.\n"
         "5. Do NOT use bullet points or numbered lists unless the user explicitly asked for a list.\n"
         "6. Keep the reply to 1-4 short sentences.\n"
-        "7. If the TOOL RESULTS contain a '__note' saying records are hidden. "
+        "        7. If the TOOL RESULTS contain a '__note' saying records are hidden. "
         "you do NOT have access to change those records. DO NOT guess or invent them. "
         "Tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
+        "/no_think\n"
     )
 
     # Truncate large tool results to avoid overwhelming the LLM's context window

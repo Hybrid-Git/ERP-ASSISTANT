@@ -425,7 +425,7 @@ async def startup_event():
     try:
         print("FastAPI started. Graph already built. Warming up worker LLM...")
         start = time.perf_counter()
-        await llm.ainvoke([SystemMessage(content="Return only: OK"),
+        await llm.ainvoke([SystemMessage(content="Return only: OK\n/no_think"),
                            HumanMessage(content="ping")])
         elapsed_time = time.perf_counter() - start
         print(f"Worker LLM warmup completed in {round(elapsed_time, 3)}s")
