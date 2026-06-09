@@ -183,6 +183,61 @@ route_keywords:
   - sgst
   - tds
   - tcs
+  - top products
+  - top product
+  - best selling
+  - bestseller
+  - popular products
+  - slow moving products
+  - slow moving
+  - dead stock
+  - sales summary
+  - sales report
+  - overall sales
+  - bikri
+  - vikri
+  - sales trend
+  - sales trends
+  - growth comparison
+  - trend analysis
+  - top customer
+  - top customers
+  - best customer
+  - top vendor
+  - top vendors
+  - top supplier
+  - purchase summary
+  - purchase report
+  - expense summary
+  - kharidi
+  - search ledger
+  - search ledgers
+  - find ledger
+  - ledger search
+  - search vendor
+  - search vendors
+  - find vendor
+  - outstanding sales
+  - outstanding invoices
+  - pending invoices
+  - unpaid invoices
+  - invoice aging
+  - overdue invoices
+  - due invoices
+  - pending payments
+  - outstanding amount
+  - outstanding purchases
+  - outstanding purchase invoices
+  - pending purchase invoices
+  - unpaid purchase invoices
+  - bills payable
+  - creditors
+  - payable invoices
+  - overdue invoices
+  - overdue bills
+  - past due invoices
+  - overdue receivables
+  - overdue payables
 
 connectors:
   - aur
@@ -223,6 +278,20 @@ segment_next_keywords:
   - customer
   - stock
   - product
+  - top products
+  - popular products
+  - slow moving products
+  - sales summary
+  - sales trend
+  - top customer
+  - top vendor
+  - purchase summary
+  - search ledger
+  - search vendor
+  - outstanding sales
+  - outstanding invoices
+  - outstanding purchases
+  - overdue invoices
 
 thresholds:
   embedding_recall_min: 0.3
@@ -289,3 +358,52 @@ pretty_field_names:
   cess: CESS
   tax: Total Tax
   category: Category
+  totalQty: Total Quantity
+  totalRevenue: Total Revenue
+  totalTaxableAmount: Taxable Amount
+  totalTaxAmount: Tax Amount
+  totalDiscount: Discount
+  totalProfit: Profit
+  orderCount: Orders
+  avgRate: Avg. Rate
+  totalAmount: Total Amount
+  totalSales: Total Sales
+  totalTax: Total Tax
+  totalOutstanding: Outstanding
+  totalPaid: Paid
+  totalIncome: Income
+  totalQuantity: Total Quantity
+  invoiceCount: Invoices
+  averageInvoiceValue: Avg. Invoice Value
+  percentage: Growth %
+  absolute: Absolute Change
+  totalRevenue: Total Revenue
+  orderCount: Orders
+  totalPurchases: Total Purchases
+  billCount: Bills
+  totalExpenses: Total Expenses
+  averageBillValue: Avg. Bill Value
+  glGroup: GL Group
+  searchTerm: Search Term
+  groupType: Group Type
+  invoiceNo: Invoice No.
+  invoiceDate: Invoice Date
+  dueDate: Due Date
+  netAmount: Net Amount
+  taxableAmount: Taxable Amount
+  outstanding: Outstanding
+  paidAmount: Paid
+  daysOverdue: Days Overdue
+  isOverdue: Overdue
+  agingBucket: Aging Bucket
+  txModeType: Type
+  invoiceType: Invoice Type
+  totalInvoices: Total Invoices
+  totalOutstanding: Total Outstanding
+  totalOverdue: Total Overdue
+  totalCurrent: Total Current
+  invoiceCategory: Category
+  totalReceivables: Total Receivables
+  totalPayables: Total Payables
+  receivablesCount: Receivable Invoices
+  payablesCount: Payable Invoices

@@ -1,19 +1,32 @@
 from langchain.tools import tool
 import json
-import re
+import re  # noqa: F401
 from typing import Optional, Any
 from src.api import api_post
 from src.config import COMPANY_ID
 import time
 import copy
 from collections import OrderedDict
-import asyncio
+import asyncio  # noqa: F401
 CUSTOMER_ENDPOINT = "/customers"
 CUSTOMER_LEDGER_ENDPOINT = "/customers/ledger"
 STOCK_LEVELS_ENDPOINT = "/inventory/stock"
 GST_SUMMARY_ENDPOINT = "/reports/gst-summary"
 TDS_OUTSTANDING_ENDPOINT = "/reports/tds-outstanding"
 TCS_OUTSTANDING_ENDPOINT = "/reports/tcs-outstanding"
+TOP_PRODUCTS_ENDPOINT = "/top-products"
+POPULAR_PRODUCTS_ENDPOINT = "/popular-products"
+SLOW_MOVING_PRODUCTS_ENDPOINT = "/slow-moving-products"
+SALES_SUMMARY_ENDPOINT = "/sales-summary"
+SALES_TRENDS_ENDPOINT = "/sales-trends"
+TOP_CUSTOMER_ENDPOINT = "/top-customers"
+TOP_VENDOR_ENDPOINT = "/top-vendors"
+PURCHASE_SUMMARY_ENDPOINT = "/purchase-summary"
+OUTSTANDING_SALES_INVOICES_ENDPOINT = "/aiAnalytics/reports/outstanding-sales-invoices"
+OUTSTANDING_PURCHASE_INVOICES_ENDPOINT = "/aiAnalytics/reports/outstanding-purchase-invoices"
+OVERDUE_INVOICES_ENDPOINT = "/aiAnalytics/reports/overdue-invoices"
+LEDGERS_SEARCH_ENDPOINT = "/ledgers/search"
+VENDORS_SEARCH_ENDPOINT = "/vendors"
 
 api_cache_maxsize = 100  # Max number of cached entries
 api_cache_ttl_secs = 600  # 10 minutes
@@ -368,6 +381,96 @@ def append_report_summary_row(result: dict, report_type: str) -> dict:
     result["period"] = raw.get("period")
 
     return result
+
+
+def flatten_sales_summary_result(result: dict) -> dict:
+    """
+    Converts sales summary object into list rows by category.
+    """
+
+    if not result.get("success"):
+        return result
+
+    raw = result.get("raw_response", {}) or {}
+    data = raw.get("data") or result.get("data") or {}
+
+    rows = []
+
+    if isinstance(data, dict):
+        for category_key, values in data.items():
+            if isinstance(values, dict):
+                rows.append({
+                    "category": category_key,
+                    **values,
+                })
+
+    result["data"] = rows
+    result["count"] = len(rows)
+    result["period"] = raw.get("period")
+
+    return result
+
+
+def flatten_purchase_summary_result(result: dict) -> dict:
+    """
+    Converts purchase summary object into list rows by category.
+    """
+
+    if not result.get("success"):
+        return result
+
+    raw = result.get("raw_response", {}) or {}
+    data = raw.get("data") or result.get("data") or {}
+
+    rows = []
+
+    if isinstance(data, dict):
+        for category_key, values in data.items():
+            if isinstance(values, dict):
+                rows.append({
+                    "category": category_key,
+                    **values,
+                })
+
+    result["data"] = rows
+    result["count"] = len(rows)
+    result["period"] = raw.get("period")
+
+    return result
+
+
+def flatten_sales_trend_result(result: dict) -> dict:
+    """
+    Converts sales trend object (current/previous/growth with categories)
+    into list rows.
+    """
+
+    if not result.get("success"):
+        return result
+
+    raw = result.get("raw_response", {}) or {}
+    data = raw.get("data") or result.get("data") or {}
+
+    rows = []
+
+    if isinstance(data, dict):
+        for period_key, categories in data.items():
+            if isinstance(categories, dict):
+                for category_key, values in categories.items():
+                    if isinstance(values, dict):
+                        rows.append({
+                            "period": period_key,
+                            "category": category_key,
+                            **values,
+                        })
+
+    result["data"] = rows
+    result["count"] = len(rows)
+    result["period"] = raw.get("period")
+
+    return result
+
+
 # ============================================================
 # TOOLS
 # ============================================================
@@ -460,6 +563,403 @@ async def get_tcs_outstanding(
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_top_products(
+    from_date: str = "",
+    to_date: str = "",
+    sort_by: str = "revenue",
+    limit: int = 10,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch top/best-selling products by revenue, quantity, or other metrics.
+
+    Use this tool when the user asks about top products, best-selling products,
+    highest revenue products, most sold items, popular products, etc.
+
+    Args:
+        from_date: Start date in YYYY-MM-DD. Empty string if not provided.
+        to_date: End date in YYYY-MM-DD. Empty string if not provided.
+        sort_by: Sort metric ("revenue", "quantity", "profit", etc.). Default "revenue".
+        limit: Number of top products to return. Default 10.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "from": from_date or "",
+        "to": to_date or "",
+        "sortBy": sort_by,
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(TOP_PRODUCTS_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_popular_products(
+    period: str = "this_month",
+    limit: int = 5,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch popular/trending products for a given period.
+
+    Use this tool when the user asks about popular products, trending products,
+    most viewed products, popular items, what's popular, current trends, etc.
+
+    Args:
+        period: Time period ("this_month", "last_month", "this_quarter", "last_quarter", "this_year", "last_year"). Default "this_month".
+        limit: Number of popular products to return. Default 5.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "period": period,
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(POPULAR_PRODUCTS_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_slow_moving_products(
+    period: str = "current_fy",
+    limit: int = 10,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch slow-moving products with low turnover for a given period.
+
+    Use this tool when the user asks about slow-moving products, slow selling items,
+    dead stock, non-moving items, low turnover products, inventory that isn't selling, etc.
+
+    Args:
+        period: Time period ("current_fy", "current_month", "last_month", "last_fy", etc.). Default "current_fy".
+        limit: Number of products to return. Default 10.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "period": period,
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(SLOW_MOVING_PRODUCTS_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_sales_summary(
+    from_date: str = "",
+    to_date: str = "",
+    group_by: str = "day",
+    vendor_id: Optional[int] = None,
+    product_id: Optional[int] = None,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch sales summary report for a date range, grouped by day/week/month.
+
+    Use this tool when the user asks about sales summary, total sales,
+    sales report, overall sales, revenue summary, sales breakdown,
+    invoice summary, paid/unpaid sales, etc.
+
+    Args:
+        from_date: Start date in YYYY-MM-DD. Empty string if not provided.
+        to_date: End date in YYYY-MM-DD. Empty string if not provided.
+        group_by: Grouping period ("day", "week", "month", "year"). Default "day".
+        vendor_id: Filter by vendor ID. None if not provided.
+        product_id: Filter by product ID. None if not provided.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "from": from_date or "",
+        "to": to_date or "",
+        "groupBy": group_by,
+        "vendorId": vendor_id,
+        "productId": product_id,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(SALES_SUMMARY_ENDPOINT, body=body)
+    result = flatten_sales_summary_result(result)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_sales_trend(
+    period: str = "this_month",
+    compare_with: str = "last_year",
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch sales trend report comparing current period with a previous period.
+
+    Use this tool when the user asks about sales trends, growth comparison,
+    sales comparison, month-over-month sales, year-over-year sales,
+    how sales have changed, trend analysis, etc.
+
+    Args:
+        period: Current period ("this_month", "last_month", "this_quarter", "last_quarter", "this_year", "last_year"). Default "this_month".
+        compare_with: Period to compare against ("last_year", "last_month", "last_quarter"). Default "last_year".
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "period": period,
+        "compareWith": compare_with,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(SALES_TRENDS_ENDPOINT, body=body)
+    result = flatten_sales_trend_result(result)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_top_customer(
+    period: str = "current_fy",
+    sort_by: str = "revenue",
+    limit: int = 10,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch top customers by revenue, order count, or other metrics.
+
+    Use this tool when the user asks about top customers, best customers,
+    highest spending customers, top buyers, top clients, etc.
+
+    Args:
+        period: Time period ("current_fy", "current_month", "last_month", "last_fy", etc.). Default "current_fy".
+        sort_by: Sort metric ("revenue", "orderCount", etc.). Default "revenue".
+        limit: Number of top customers to return. Default 10.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "period": period,
+        "sortBy": sort_by,
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(TOP_CUSTOMER_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_top_vendor(
+    period: str = "current_fy",
+    limit: int = 10,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch top vendors by purchase amount or bill count.
+
+    Use this tool when the user asks about top vendors, best vendors,
+    top suppliers, highest purchase vendors, vendor ranking, etc.
+
+    Args:
+        period: Time period ("current_fy", "current_month", "last_month", "last_fy", etc.). Default "current_fy".
+        limit: Number of top vendors to return. Default 10.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "period": period,
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(TOP_VENDOR_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_purchase_summary(
+    from_date: str = "",
+    to_date: str = "",
+    vendor_id: Optional[int] = None,
+    product_id: Optional[int] = None,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch purchase summary report for a date range.
+
+    Use this tool when the user asks about purchase summary, total purchases,
+    purchase report, expense summary, bill summary, what was purchased, etc.
+
+    Args:
+        from_date: Start date in YYYY-MM-DD. Empty string if not provided.
+        to_date: End date in YYYY-MM-DD. Empty string if not provided.
+        vendor_id: Filter by vendor ID. None if not provided.
+        product_id: Filter by product ID. None if not provided.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "from": from_date or "",
+        "to": to_date or "",
+        "vendorId": vendor_id,
+        "productId": product_id,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(PURCHASE_SUMMARY_ENDPOINT, body=body)
+    result = flatten_purchase_summary_result(result)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_search_ledgers(
+    search_term: str = "",
+    group_type: Optional[str] = None,
+    page: int = 1,
+    limit: int = 10,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Search ledgers by name or group type (expense, income, etc.).
+
+    Use this tool when the user asks about ledgers, search ledgers,
+    find ledgers, ledger groups, expense ledgers, income ledgers, etc.
+
+    Args:
+        search_term: Keyword to search ledger names by. Empty string returns all.
+        group_type: Filter by group type ("expense", "income", "liability", "asset", etc.). None if not provided.
+        page: Page number. Default 1.
+        limit: Number of records per page. Default 10.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "searchTerm": search_term or "",
+        "groupType": group_type,
+        "page": page,
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(LEDGERS_SEARCH_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_search_vendors(
+    search: str = "",
+    limit: int = 10,
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Search vendors/suppliers by name.
+
+    Use this tool when the user asks about vendors, suppliers,
+    search vendors, find vendors, vendor list, supplier list, etc.
+
+    Args:
+        search: Vendor/supplier name to search for (substring match). Empty string returns all.
+        limit: Number of records to return. Default 10.
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "search": search or "",
+        "limit": limit,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(VENDORS_SEARCH_ENDPOINT, body=body)
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
 @tool
 async def get_customer(
     search: Optional[str] = "",
@@ -485,7 +985,7 @@ async def get_customer(
     # ── Sanitize search parameter ──
     # The LLM often treats `search` as a semantic filter instead of a name lookup.
     # These guards convert bad search terms into empty search (return all customers).
-    raw_search = search
+    raw_search = search  # noqa: F841
     if search:
         stripped = search.strip().lower()
         # 1. Fetch-all keywords → empty search
@@ -701,6 +1201,159 @@ async def get_stock_levels(
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
+@tool
+async def get_outstanding_sales_invoices(
+    from_date: str = "",
+    to_date: str = "",
+    as_of_date: str = "",
+    page: int = 1,
+    limit: int = 50,
+    sort_by: str = "daysOverdue",
+    sort_order: str = "desc",
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch outstanding/unpaid sales invoices with aging details.
+
+    Use this tool when the user asks about outstanding invoices, pending payments,
+    unpaid sales invoices, due invoices, overdue invoices, invoice aging, etc.
+
+    Args:
+        from_date: Start date YYYY-MM-DD. Empty if not provided.
+        to_date: End date YYYY-MM-DD. Empty if not provided.
+        as_of_date: Snapshot date YYYY-MM-DD. Empty for API default.
+        page: Page number. Default 1.
+        limit: Records per page. Default 50.
+        sort_by: Sort field ("daysOverdue", "invoiceDate", "outstanding", etc.). Default "daysOverdue".
+        sort_order: Sort order ("asc", "desc"). Default "desc".
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "from": from_date or "",
+        "to": to_date or "",
+        "asOfDate": as_of_date or "",
+        "page": page,
+        "limit": limit,
+        "sortBy": sort_by,
+        "sortOrder": sort_order,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(OUTSTANDING_SALES_INVOICES_ENDPOINT, body=body)
+    result = append_report_summary_row(result, "outstandingSalesInvoices")
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_outstanding_purchase_invoices(
+    from_date: str = "",
+    to_date: str = "",
+    as_of_date: str = "",
+    page: int = 1,
+    limit: int = 50,
+    sort_by: str = "daysOverdue",
+    sort_order: str = "desc",
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch outstanding/unpaid purchase invoices with aging details.
+
+    Use this tool when the user asks about outstanding purchases, pending bills,
+    unpaid purchase invoices, bills payable, creditor outstanding, etc.
+
+    Args:
+        from_date: Start date YYYY-MM-DD. Empty if not provided.
+        to_date: End date YYYY-MM-DD. Empty if not provided.
+        as_of_date: Snapshot date YYYY-MM-DD. Empty for API default.
+        page: Page number. Default 1.
+        limit: Records per page. Default 50.
+        sort_by: Sort field ("daysOverdue", "invoiceDate", "outstanding", etc.). Default "daysOverdue".
+        sort_order: Sort order ("asc", "desc"). Default "desc".
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "from": from_date or "",
+        "to": to_date or "",
+        "asOfDate": as_of_date or "",
+        "page": page,
+        "limit": limit,
+        "sortBy": sort_by,
+        "sortOrder": sort_order,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body=body)
+    result = append_report_summary_row(result, "outstandingPurchaseInvoices")
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool
+async def get_overdue_invoices(
+    invoice_type: str = "BOTH",
+    as_of_date: str = "",
+    page: int = 1,
+    limit: int = 50,
+    sort_by: str = "daysOverdue",
+    sort_order: str = "desc",
+    fields: Optional[Any] = None,
+    filters: Optional[dict[str, Any]] = None,
+):
+    """
+    Fetch overdue invoices (both sales and purchase) beyond their due date.
+
+    Use this tool when the user asks about overdue invoices, past due bills,
+    delayed payments, overdue receivables, overdue payables, etc.
+
+    Args:
+        invoice_type: Filter by type ("SALES", "PURCHASE", or "BOTH"). Default "BOTH".
+        as_of_date: Snapshot date YYYY-MM-DD. Empty for API default.
+        page: Page number. Default 1.
+        limit: Records per page. Default 50.
+        sort_by: Sort field ("daysOverdue", "invoiceDate", "outstanding", etc.). Default "daysOverdue".
+        sort_order: Sort order ("asc", "desc"). Default "desc".
+        fields: Optional output columns.
+        filters: Optional exact filters.
+    """
+
+    body = {
+        "companyId": COMPANY_ID,
+        "invoiceType": invoice_type or "BOTH",
+        "asOfDate": as_of_date or "",
+        "page": page,
+        "limit": limit,
+        "sortBy": sort_by,
+        "sortOrder": sort_order,
+    }
+
+    if filters:
+        body["filters"] = filters
+
+    result = await cached_api_post(OVERDUE_INVOICES_ENDPOINT, body=body)
+    result = append_report_summary_row(result, "overdueInvoices")
+    result = project_result(result, fields=fields, filters=filters)
+
+    print("[TOOL OUTPUT]", result)
+    return json.dumps(result, ensure_ascii=False)
+
+
 tools = [
     get_customer,
     get_customer_ledger,
@@ -708,6 +1361,19 @@ tools = [
     get_gst_summary,
     get_tds_outstanding,
     get_tcs_outstanding,
+    get_top_products,
+    get_popular_products,
+    get_slow_moving_products,
+    get_sales_summary,
+    get_sales_trend,
+    get_top_customer,
+    get_top_vendor,
+    get_purchase_summary,
+    get_search_ledgers,
+    get_search_vendors,
+    get_outstanding_sales_invoices,
+    get_outstanding_purchase_invoices,
+    get_overdue_invoices,
 ]
 
 tools_dict = {tool.name: tool for tool in tools}
