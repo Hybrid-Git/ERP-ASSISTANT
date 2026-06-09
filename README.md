@@ -48,7 +48,7 @@ START
 |---|---|
 | `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — 3 fast-path shortcuts. Stores both `original_query` and `canonical_query`. |
 | `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. Splits multi-intent queries. Detects meta-questions, greetings (returns welcome message), and unsupported queries (returns refusal). |
-| `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, and multi-identifier expansion. Falls back to `memory_answer` via summary LLM when no tools are selected. |
+| `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Missing tools are force-injected with domain-aware dedup (one tool per domain). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, multi-identifier expansion, and tool-alignment cross-domain guard. Falls back to `memory_answer` via summary LLM when no tools are selected. |
 | `routing_node` | Routes to `tools` if last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends. Falls through after `loop_count > 5`. |
 | `tools` | Executes tool functions against the Chapter-1 backend API via `ToolNode`. |
 | `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids`. Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities. |
@@ -127,6 +127,22 @@ Tool argument repair uses `TOOL_INTENT_REGISTRY` in `src/tool_doc.py`:
 - **`extract_customer_id`** — regex-based customer ID extraction
 - **`city_filter`** — applies city-based filtering from query keywords
 - **`low_stock_only_keywords`** — detects low-stock intent from query phrases
+
+### Multi-Tool Force-Inject with Domain Dedup
+
+When the LLM doesn't call all tools needed for a multi-part query, the retry loop automatically force-injects missing tools with deterministic default args. Domain-aware dedup ensures only one tool per domain is injected (e.g., if `get_customer` is already called, `get_customer_ledger` and `get_top_customer` are skipped). The repair layer fills in date ranges, fields, and filters from the query text.
+
+### Tool-Alignment Cross-Domain Guard
+
+The alignment layer prevents redirecting a tool call to a different domain (e.g., `get_customer`→`get_customer_ledger` is allowed because both are `customer` domain, but `get_customer`→`get_gst_summary` is blocked). Tools with query-specific args (search, term, filters) are never redirected.
+
+### B2B/B2C GST Routing
+
+System-prompt rule 13 teaches the LLM that B2B/B2C/Exports/Nil-Rated are GST categories, not sales categories. The LLM is guided to use `get_gst_summary` (with `filters.category`) for these queries instead of `get_sales_summary`.
+
+### Smart Tool Trimming
+
+When reducing the selected tool list to fit context limits, the trimmer preserves at least one tool per query part before applying frequency-based fill. This prevents single-match tools (like `get_gst_summary` for B2C queries) from being dropped.
 
 ### Generic Cross-Tool Corrections
 
@@ -441,10 +457,10 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 
 ## Known Bugs & Limitations
 
-- **API pagination** — Some tools default to `limit=10`; count queries may see only partial records despite `total_rows` indicating hundreds.
 - **In-memory sessions** — sessions are lost on server restart. Switch to SQLite for persistence.
 - **Summarization trim** — after 6+ human messages, old context is summarized via LLM; summary quality depends on the model.
-- **Multi-intent splitting** — queries with multiple tools may produce sequential (not parallel) tool calls due to single-call-per-response LLM behavior.
+- **Single-call-per-response LLM** — some LLMs emit only 1-2 tool calls per response for multi-part queries; the force-inject and retry loop compensate, but may still miss borderline-relevant tools.
+- **Small-context LLMs** — models with small context windows (7B) may drop less-relevant tools during the bind_tools step; the 8-tool trim limit can lose query-part-specific tools if parts exceed the budget.
 
 ---
 

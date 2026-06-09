@@ -1,2 +1,0 @@
-FROM qwen3:8b
-SYSTEM "/no_think"
