@@ -1660,12 +1660,20 @@ async def chat_model_node(state: MainState):
         for qp in query_parts:
             hd, _ = classify_domains(qp)
             all_part_domains |= hd
+        # Track domains already covered by tools the LLM called
+        covered_domains = set()
+        for tn in called_names:
+            covered_domains |= set(TOOL_DOMAINS.get(tn, []))
         for tn in selected_tools:
             if tn not in called_names:
-                td = TOOL_DOMAINS.get(tn, [])
-                # Only inject if tool domain overlaps with query parts or tool has no domain
-                if td and all_part_domains and not any(d in all_part_domains for d in td):
+                td = set(TOOL_DOMAINS.get(tn, []))
+                # Skip if no domain overlap with query parts
+                if td and all_part_domains and not td & all_part_domains:
                     print(f"[FORCE-INJECT] Skipping {tn} (domain {td} no overlap with {all_part_domains})")
+                    continue
+                # Skip if tool's domains are already covered by an already-called tool
+                if td and covered_domains and td & covered_domains:
+                    print(f"[FORCE-INJECT] Skipping {tn} (domain {td} already covered by {covered_domains})")
                     continue
                 all_raw_calls.append({
                     "name": tn,
@@ -1674,6 +1682,7 @@ async def chat_model_node(state: MainState):
                     "type": "tool_call",
                 })
                 called_names.add(tn)
+                covered_domains |= td
                 print(f"[FORCE-INJECT] Adding missing tool: {tn}")
 
         raw_tool_calls = all_raw_calls
