@@ -179,3 +179,91 @@ Add entry to `TOOL_INTENT_REGISTRY` (before the closing `}`):
 | `get_search_vendors` | `/aiAnalytics/vendors` | vendor |
 | `get_outstanding_sales_invoices` | `/aiAnalytics/reports/outstanding-sales-invoices` | sales |
 | `get_outstanding_purchase_invoices` | `/aiAnalytics/reports/outstanding-purchase-invoices` | purchase |
+
+---
+
+## Known Bugs & Issues (Session Log - June 2026)
+
+### 1. Invoice-number filter silently dropped
+
+**Symptom:** Query `"AI/22-23/018 iska kitna overdue hai"` returns ALL overdue invoices instead of just the matching one.
+
+**Root cause chain:**
+1. LLM emits `filters: {"invoiceNumber": "AI/22-23/018"}` for `get_overdue_invoices`
+2. `sanitize_tool_filters` (`nodes.py:1012`) checks `invoiceNumber` against `meta.fields` — valid field is `invoiceNo`, not `invoiceNumber` → flagged invalid
+3. Tries to move value to `search`/`term` param — neither exists on invoice tools → **value silently dropped** (`nodes.py:1031-1037`)
+4. Tool returns unfiltered API response (all overdue invoices)
+5. Client-side `apply_filters` (`tools_api.py:296`) never receives the filter → no post-filtering either
+
+**Fix locations:**
+- `src/nodes.py` ~line 1012 in `sanitize_tool_filters`: build reverse `field_aliases` lookup (same pattern as `_apply_repair` line 1676-1683) and remap filter keys before validity check
+- `src/tools_api.py` ~line 193 in `apply_filters`: add same reverse alias remap before checking `record_fields`
+- Currently unaffected: `param_aliases` in `_apply_repair` (line 1691-1694) only remaps top-level args, not `filters` sub-dict — and runs *after* `sanitize_tool_filters` has already stripped the data
+
+**Related:** The same bug affects `filters: {"customerName": "..."}` — `customerName` → `ledgerName`, `outstandingAmount` → `outstanding`. Any LLM-invented filter key gets silently dropped for tools without `search`/`term` params.
+
+---
+
+### 2. Semantic search / cross-encoder too slow
+
+**File:** `config.yaml:299` | `nodes.py:26`
+
+**Measured time:** 10.99s for one query
+
+**Calculation:** 19 tools × 4 query parts = **76 pairwise cross-encoder scores** using `cross-encoder/ms-marco-MiniLM-L-6-v2`
+
+**Fix:** Reduce `reranker_top_k: 5` → `reranker_top_k: 3`. Cuts ~40% of cross-encoder work. Or switch to `MiniLM-L-4-v2` for ~2x speedup at minor accuracy cost.
+
+**Alternative:** The first query (1 part × 19 tools = 19 scores) took only 2.7s. The 10s queries have 3-4 parts. Can we limit parts before cross-encoder, or deduplicate overlapping parts?
+
+---
+
+### 3. Unnecessary tool selection via keyword fallback
+
+**Symptom:** A query like `"AI/22-23/018 overdue amount and name"` selects 4 tools when only `get_overdue_invoices` is sufficient.
+
+**Selected:** `get_outstanding_sales_invoices`, `get_outstanding_purchase_invoices`, `get_overdue_invoices`, `get_customer`
+
+**Why:** Query part "overdue" matches keyword lists for all 3 invoice tools. "Customer name" hits `get_customer`.
+
+**Impact:** qwen3:8b emits only 1-2 tool calls per LLM round → 2 rounds (30s + 8.5s) instead of 1. Two of those tool calls (`get_outstanding_*`) then timeout (10s wasted).
+
+**Fix:** Add invoice-number regex check (`\w{2}/\d{2}-\d{2}/\d{3}`) in semantic search or keyword fallback — when detected, skip `get_customer` and opposite-category invoice tools.
+
+---
+
+### 4. Outstanding invoice API timeout
+
+**Symptom:** Both `get_outstanding_sales_invoices` and `get_outstanding_purchase_invoices` timed out (API 504 / no response in 30s).
+
+**Observation:** These endpoints are slower than `get_overdue_invoices` (which returned in 0.7s). The outstanding endpoints might compute totals on-the-fly or fetch larger datasets.
+
+**Status:** Not reproducible on demand — likely load-dependent. Increase `cached_api_post` timeout or implement retry with backoff as a mitigation.
+
+---
+
+### 5. `_apply_repair` field remap covers `fields` but not `filters`
+
+**File:** `src/nodes.py:1676-1683` (field remap) vs `src/nodes.py:1691-1694` (param_aliases)
+
+The field alias reverse remap (`nodes.py:1676-1683`) only applies to the `fields` list in args, not to `filters` keys. So:
+- `fields: ["customerName"]` → corrected to `fields: ["ledgerName"]` ✅
+- `filters: {"customerName": "..."}` → NOT corrected ❌
+
+**Fix:** Either extend the field remap to also mutate `filters` keys, or add reverse alias lookup in `sanitize_tool_filters` (see Bug #1).
+
+---
+
+### 6. Latency breakdown (reference)
+
+| Stage | Time | % of total |
+|-------|------|-----------|
+| translator | 4.7s | 6% |
+| semantic_search | 11.0s | 14% |
+| chat_model (round 1) | 29.9s | 39% |
+| chat_model (round 2) | 8.6s | 11% |
+| tools | 10.1s | 13% |
+| response_generation | 7.0s | 9% |
+| **Total** | **~76s** | |
+
+**Key insight:** Multi-round LLM calls (38.5s total) dominate. Reducing unnecessary tools (Bug #3) eliminates round 2. Faster cross-encoder (Bug #2) saves ~4-5s.

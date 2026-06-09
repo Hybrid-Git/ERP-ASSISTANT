@@ -1640,15 +1640,17 @@ async def chat_model_node(state: MainState):
             # Build the field list.
             # When LLM explicitly sent fields, use those as starting point.
             # Otherwise, fall back to default_fields.
+            # When overwrite=True with base_args.fields, use base_args as source.
             # Then apply curated field_triggers as a safety net for fields the
             # user asked for but LLM missed. Skip triggers when query has
             # "sirf"/"only"/"just"/"bas" (user wants ONLY those fields).
             llm_sent_fields = "fields" in args
-            fields = list(
-                (args.get("fields") or [])
-                if llm_sent_fields
-                else (repair.get("default_fields") or [])
-            )
+            if repair.get("overwrite") and "fields" in (repair.get("base_args") or {}):
+                fields = list(repair["base_args"]["fields"])
+            elif llm_sent_fields:
+                fields = list(args.get("fields") or [])
+            else:
+                fields = list(repair.get("default_fields") or [])
             for kw, fld in repair.get("field_triggers", {}).items():
                 match = kw in combined_q if " " in kw else bool(re.search(rf'\b{re.escape(kw)}\b', combined_q))
                 if match and fld not in fields:
@@ -1669,6 +1671,16 @@ async def chat_model_node(state: MainState):
 
                 if "closingQuantity" in flds:
                     flds[flds.index("closingQuantity")] = "closingQty"
+
+                # Remap LLM-invented field names to real API fields using field_aliases
+                field_aliases = meta.get("field_aliases", {})
+                alias_to_real = {}
+                for real_field, aliases in field_aliases.items():
+                    for alias in aliases:
+                        alias_to_real[alias] = real_field
+                for i, f in enumerate(flds):
+                    if f not in field_aliases and f in alias_to_real:
+                        flds[i] = alias_to_real[f]
 
             # Merge back worker's explicit non-standard args that repair didn't set
             for k, v in worker_extra.items():
