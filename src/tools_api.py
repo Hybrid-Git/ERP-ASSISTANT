@@ -301,6 +301,43 @@ def project_result(result: dict, fields=None, filters=None) -> dict:
 
     return result
 
+
+async def _fetch_specific_with_pagination(
+    endpoint: str,
+    body: dict,
+    fields,
+    filters,
+    result: dict,
+) -> dict:
+    """For specific invoice lookups, fetch additional pages if first page has no match."""
+    if result.get("data"):
+        return result
+    if not filters or not isinstance(filters, dict):
+        return result
+    has_invoice_filter = any(
+        k in filters for k in ("invoiceNo", "invoiceNumber", "invoice_number", "invoiceNumber")
+    )
+    if not has_invoice_filter:
+        return result
+
+    raw = result.get("raw_response", {})
+    total_pages = raw.get("total_pages", 1)
+    if total_pages <= 1 or not isinstance(total_pages, (int, float)):
+        return result
+
+    body = dict(body)
+    # Fetch all remaining records in one call by using the total count as limit
+    body["page"] = 1
+    body["limit"] = int(total_pages) * body.get("limit", 50)
+    all_data = await cached_api_post(endpoint, body=body)
+    all_data = project_result(all_data, fields=fields, filters=filters)
+    if all_data.get("data"):
+        all_data["paginated"] = True
+        return all_data
+
+    return result
+
+
 def flatten_gst_summary_result(result: dict) -> dict:
     """
     Converts GST summary object into list rows so deterministic_final can handle it.
@@ -1248,6 +1285,7 @@ async def get_outstanding_sales_invoices(
     result = await cached_api_post(OUTSTANDING_SALES_INVOICES_ENDPOINT, body=body)
     result = append_report_summary_row(result, "outstandingSalesInvoices")
     result = project_result(result, fields=fields, filters=filters)
+    result = await _fetch_specific_with_pagination(OUTSTANDING_SALES_INVOICES_ENDPOINT, body, fields, filters, result)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -1300,6 +1338,7 @@ async def get_outstanding_purchase_invoices(
     result = await cached_api_post(OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body=body)
     result = append_report_summary_row(result, "outstandingPurchaseInvoices")
     result = project_result(result, fields=fields, filters=filters)
+    result = await _fetch_specific_with_pagination(OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body, fields, filters, result)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -1349,6 +1388,7 @@ async def get_overdue_invoices(
     result = await cached_api_post(OVERDUE_INVOICES_ENDPOINT, body=body)
     result = append_report_summary_row(result, "overdueInvoices")
     result = project_result(result, fields=fields, filters=filters)
+    result = await _fetch_specific_with_pagination(OVERDUE_INVOICES_ENDPOINT, body, fields, filters, result)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)

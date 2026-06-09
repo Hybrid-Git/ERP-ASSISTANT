@@ -76,18 +76,7 @@ def chat_stream(session_id, query):
 
 
 def render_records(data_dict):
-    if not data_dict or not isinstance(data_dict, dict):
-        return
-    for tool_name, records in data_dict.items():
-        if not records or not isinstance(records, list):
-            continue
-        clean = [r for r in records if isinstance(r, dict) and not r.get("__note")]
-        if not clean:
-            continue
-        df = pd.DataFrame(clean)
-        n = len(clean)
-        with st.expander(f"📊 {tool_name}: {n} records", expanded=False):
-            st.dataframe(df, height=300 if n > 10 else 35*n+40, use_container_width=True)
+    pass
 
 
 # ── Initialise session state ──

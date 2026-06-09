@@ -150,11 +150,12 @@ TOOL_INTENT_REGISTRY = {
     "get_gst_summary": {
         "category": "gst_report",
         "multi_call_ok": True,
-        "description": "Fetch GST summary/report by date range; supports B2B, B2C, exports, nil/exempt, credit notes and grand total rows.",
-        "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nilRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter. NO search/term/limit params — these do NOT exist for this tool.",
-        "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge"],
+        "description": "Fetch GST summary/report by date range. B2B / B2C Small / B2C Large / Exports / Nil-Rated / Exempt are GST categories — NOT sales categories. Use this tool (NOT get_sales_summary) when the user asks about B2B, B2C (Small/Large), exports, nil-rated, exempt, credit-notes, or grand-total data.",
+        "prompt_tips": "CRITICAL: B2B, B2C Small, B2C Large, Exports, Nil-Rated, Exempt are GST categorization rows in the GST report — NOT sales summary rows. When user asks for B2C/B2B data/count/split, ALWAYS use this tool with filters.category set. Single cat => filters.category with that value; multi => omit filters.category. Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nilRated, grandTotal=grandTotal. DO NOT use get_sales_summary for B2C/B2B — it returns overall totals, not the GST category split. NO search/term/limit params — these do NOT exist for this tool.",
+        "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge", "b2c", "b2b"],
         "keywords": [
-            "b2b", "b2c", "b2c large", "b2clarge", "b2c small", "b2csmall",
+            "b2b", "b2c", "b2c invoices", "b2c count", "b2b invoices", "b2b count",
+            "b2b b2c split", "b2c large", "b2clarge", "b2c small", "b2csmall",
             "exports", "export",
             "nil rated", "nilrated", "exempt",
             "igst", "cgst", "sgst", "cess",
@@ -608,15 +609,20 @@ TOOL_INTENT_REGISTRY = {
     "get_search_ledgers": {
         "category": "ledger",
         "multi_call_ok": True,
-        "description": "Search ledgers by name or filter by group type (expense, income, liability, asset).",
-        "prompt_tips": "search_term=keyword, group_type=expense|income|liability|asset. Fields: id, name, openingBalance, openingType, glGroup (nested), email, phone, address, city, state, gstNumber.",
+        "description": "Search ledgers (party, expense, income, asset) by name + optional groupType. Use `groupType=expense` for office expenses/salary/rent, `groupType=party` for customers/vendors. Returns ledger id, name, openingBalance, glGroup.",
+        "prompt_tips": "For 'X ka id' queries, pass groupType=expense|asset|party matching the noun. searchTerm is free-text for ledger name (e.g. 'office' for 'Office Expenses'). group_type=expense|income|liability|asset. Fields: id, name, openingBalance, openingType, glGroup (nested), email, phone, address, city, state, gstNumber.",
         "aliases": [
             "search ledger", "search ledgers", "find ledger", "find ledgers",
             "ledger search", "ledger group", "ledger groups",
+            "find id", "ledger id", "expense id", "expense ledger",
+            "office expenses id", "salary id", "rent id",
         ],
         "keywords": [
             "search ledger", "find ledger", "ledger group",
             "expense ledger", "income ledger",
+            "office expenses", "expense", "expenses", "salary", "rent", "utility",
+            "expense id", "ledger id", "find id",
+            "gl group", "group type",
         ],
         "fields": [
             "id", "name", "email", "phoneNumber", "address",
@@ -713,7 +719,7 @@ TOOL_INTENT_REGISTRY = {
         "field_aliases": {
             "recordType": ["record type"],
             "invoiceId": ["invoice id"],
-            "invoiceNo": ["invoice no", "invoice number", "invoice", "invoiceNumber"],
+            "invoiceNo": ["invoice no", "invoice number", "invoice", "invoiceNumber", "invoice_number"],
             "invoiceDate": ["invoice date", "date", "bill date"],
             "dueDate": ["due date", "due"],
             "ledgerId": ["customer id", "ledger id"],
@@ -769,7 +775,7 @@ TOOL_INTENT_REGISTRY = {
         "field_aliases": {
             "recordType": ["record type"],
             "invoiceId": ["invoice id"],
-            "invoiceNo": ["invoice no", "invoice number", "invoice", "bill no", "bill number", "invoiceNumber"],
+            "invoiceNo": ["invoice no", "invoice number", "invoice", "bill no", "bill number", "invoiceNumber", "invoice_number"],
             "invoiceDate": ["invoice date", "date", "bill date"],
             "dueDate": ["due date", "due"],
             "ledgerId": ["vendor id", "supplier id", "ledger id"],
@@ -794,7 +800,7 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "date_keywords": ["outstanding", "purchase", "invoice", "payable", "creditor", "vendor", "bill"],
             "default_fields": ["invoiceNo", "invoiceDate", "ledgerName", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
-            "param_aliases": {"customerName": "ledgerName", "outstandingAmount": "outstanding"},
+            "param_aliases": {},
         },
     },
     "get_overdue_invoices": {
@@ -828,7 +834,7 @@ TOOL_INTENT_REGISTRY = {
         "field_aliases": {
             "recordType": ["record type"],
             "invoiceId": ["invoice id"],
-            "invoiceNo": ["invoice no", "invoice number", "invoice", "bill no", "invoiceNumber"],
+            "invoiceNo": ["invoice no", "invoice number", "invoice", "bill no", "invoiceNumber", "invoice_number"],
             "invoiceDate": ["invoice date", "date", "bill date"],
             "dueDate": ["due date", "due"],
             "ledgerId": ["customer id", "vendor id", "ledger id"],

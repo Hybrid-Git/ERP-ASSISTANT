@@ -294,8 +294,8 @@ segment_next_keywords:
   - overdue invoices
 
 thresholds:
-  embedding_recall_min: 0.3
-  reranker_top_k: 3
+  embedding_recall_min: 0.4
+  reranker_top_k: 6
 
 # used by wants_unique_party_names()
 party_words:
