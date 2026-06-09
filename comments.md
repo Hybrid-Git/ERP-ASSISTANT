@@ -2,10 +2,10 @@
 
 ## Changes Made
 
-### 1. Semantic search re-enabled (embedding recall only)
-- **File:** `src/nodes.py:427-590`
-- **What:** Activated the preserved `semantic_search` body. Switched model from `qwen3:8b` → `qwen2.5:7b-instruct` and embedding model from `qwen3-embedding:0.6b` → `bge-m3:latest`.
-- **Why:** All-19-tools approach caused unnecessary API calls and noise. Embedding recall at ~50ms is negligible vs 28s LLM time. bge-m3 handles multilingual terms better.
+### 1. Semantic search re-enabled (hybrid: embedding + Jaccard)
+- **File:** `src/nodes.py:275-310`
+- **What:** Activated the preserved `semantic_search` body. Switched model from `qwen3:8b` → `qwen2.5:7b-instruct` and embedding model from `qwen3-embedding:0.6b` → `bge-m3:latest`. Added Jaccard word-overlap as sparse arm (0.7 emb + 0.3 overlap).
+- **Why:** All-19-tools approach caused unnecessary API calls and noise. Hybrid catches exact-word queries embeddings miss (e.g., ticket/order numbers, field names). ~0ms overhead, zero new deps.
 - **Cleanup:** Removed dead cross-encoder code (`CrossEncoder` import, `get_cross_encoder()`, `TH_RERANKER_MIN`, `CROSS_ENCODER_MODEL` config).
 
 ### 2. Cross-encoder code fully removed

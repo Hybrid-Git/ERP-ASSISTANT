@@ -273,7 +273,7 @@ async def translator_node(state: MainState) -> MainState:
         }
 
 def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
-    """Embedding recall + cross-encoder reranker for tool selection."""
+    """Hybrid: embedding recall (dense) + Jaccard word overlap (sparse)."""
     if not _tool_embeddings:
         _build_tool_embeddings()
     if not _tool_embeddings:
@@ -284,20 +284,30 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     except Exception:
         return []
 
+    query_tokens = set(query_part.lower().split())
+
     scores = []
     for tool_name, tool_emb in _tool_embeddings.items():
-        sim = _cosine_sim(query_emb, tool_emb)
-        scores.append((tool_name, sim))
+        emb_sim = _cosine_sim(query_emb, tool_emb)
+
+        meta = registry.get(tool_name, {})
+        tool_text = f"{meta.get('description', '')} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))} {' '.join(meta.get('fields', []))}"
+        tool_tokens = set(tool_text.lower().split())
+        denom = max(len(query_tokens), len(tool_tokens), 1)
+        jaccard = len(query_tokens & tool_tokens) / denom if tool_tokens else 0.0
+
+        combined = 0.7 * emb_sim + 0.3 * jaccard
+        scores.append((tool_name, combined, emb_sim, jaccard))
 
     scores.sort(key=lambda x: x[1], reverse=True)
 
-    if not scores or scores[0][1] < TH_EMBEDDING_RECALL_MIN:
+    if not scores:
         return []
 
     top_k = scores[:TH_RERANKER_TOP_K]
     result = []
-    for tool_name,score in top_k:
-        if tool_name not in result:
+    for tool_name, combined, emb_sim, jaccard in top_k:
+        if tool_name not in result and (emb_sim >= TH_EMBEDDING_RECALL_MIN or jaccard > 0):
             result.append(tool_name)
     return result
 
@@ -769,8 +779,8 @@ def build_system_prompt(
                 lines.append("--------------------------------------------------")
     if selected_tools:
         lines.append("")
-        lines.append(f"You MUST call ALL {len(selected_tools)} tools: {', '.join(selected_tools)}")
-        lines.append("Do NOT skip any. Each tool addresses a different part of the user's request.")
+        lines.append(f"Available tools: {', '.join(selected_tools)}")
+        lines.append("Call the tool(s) that are relevant to the query. You do NOT need to call every tool — only those that actually address the user's request.")
         lines.append("")
         lines.append("Tool rules:")
         lines.append("  You may call the SAME tool MULTIPLE TIMES with different sort/filter arguments for different sub-requests.")
@@ -1233,7 +1243,11 @@ async def chat_model_node(state: MainState):
         loop_input = llm_input
         retry_count = 0
 
-        while remaining_names and retry_count < 3:
+        while remaining_names:
+            if retry_count >= 3:
+                break
+            if retry_count >= 1 and called_names:
+                break
             retry_count += 1
             remaining_tools = [
                 t for t in available_tools if t.name in remaining_names
@@ -1315,8 +1329,15 @@ async def chat_model_node(state: MainState):
 
                 # If LLM sent no fields, build from query triggers only (no force-added extras).
                 # Use meta-level default_fields (not repair-level — repair is the sub-dict).
-                if "fields" not in args or not args.get("fields"):
-                    args["fields"] = list(meta.get("default_fields", repair.get("default_fields", ["name"])))
+                # If LLM sent fields, merge with default + always_include to prevent data loss.
+                llm_fields = args.get("fields")
+                defaults = list(meta.get("default_fields", repair.get("default_fields", [])))
+                always = list(meta.get("always_include_fields", []))
+                if not llm_fields:
+                    args["fields"] = defaults
+                else:
+                    merged = list(dict.fromkeys(defaults + always + llm_fields))
+                    args["fields"] = merged
 
                 # Clear term if it looks like a filter expression, not a product name
                 term = args.get("term")
@@ -1499,7 +1520,7 @@ async def chat_model_node(state: MainState):
                     new_args.pop("category", None)
 
             if repair.get("extract_customer_id"):
-                cm = re.search(r"customer\s*id\s*[:#-]?\s*(\d+)", combined_q)
+                cm = re.search(r"(?:customer|party|client)\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)", combined_q)
 
                 if cm:
                     new_args["customer_id"] = int(cm.group(1))
@@ -1523,6 +1544,45 @@ async def chat_model_node(state: MainState):
             if low_stock_kws and new_args.get("low_stock_only") is True:
                 if not any(kw in combined_q for kw in low_stock_kws):
                     new_args["low_stock_only"] = False
+
+            # Auto-extract customer ID number for get_customer tool (e.g. "customer 76" -> search="76")
+            if name == "get_customer":
+                cust_num = re.search(r"(?:customer|party|client)\s*(?:number|no|#)?\s*:?\s*(\d+)", combined_q)
+                if cust_num and not new_args.get("search"):
+                    new_args["search"] = cust_num.group(1)
+
+            # Auto-inject invoice number filter for invoice tools
+            INVOICE_TOOLS = {"get_overdue_invoices", "get_outstanding_sales_invoices", "get_outstanding_purchase_invoices"}
+            if name in INVOICE_TOOLS:
+                inv_pattern = re.compile(r'\b[A-Z]{2,5}[/-]\d{2,4}[/-]\d{2,4}/\d{2,5}\b', re.IGNORECASE)
+                inv_match = inv_pattern.search(combined_q)
+                if inv_match:
+                    inv_no = inv_match.group(0)
+                    inv_filters = new_args.get("filters") or {}
+                    if not isinstance(inv_filters, dict):
+                        inv_filters = {}
+                    if "invoiceNo" not in inv_filters:
+                        inv_filters["invoiceNo"] = inv_no
+                    new_args["filters"] = inv_filters
+
+            # Auto-inject TDS section filter
+            if name == "get_tds_outstanding":
+                section_match = re.search(r'\b(194[A-J])\b', combined_q)
+                if section_match:
+                    tds_filters = new_args.get("filters") or {}
+                    if not isinstance(tds_filters, dict):
+                        tds_filters = {}
+                    tds_filters["section"] = section_match.group(1)
+                    new_args["filters"] = tds_filters
+
+            # Auto-inject TCS section filter
+            if name == "get_tcs_outstanding":
+                if re.search(r'\b206C\b', combined_q):
+                    tcs_filters = new_args.get("filters") or {}
+                    if not isinstance(tcs_filters, dict):
+                        tcs_filters = {}
+                    tcs_filters["section"] = "206C"
+                    new_args["filters"] = tcs_filters
 
             # Generic value-comparison filter: detect "negative <field>",
             # "less than 0" / "0 se kam" / "< 0" with a field keyword → {field: {lt: 0}}.
@@ -1622,6 +1682,12 @@ async def chat_model_node(state: MainState):
                     fields.append(fld)
             if fields:
                 new_args["fields"] = fields
+
+            # Ensure always_include_fields from tool meta are never lost
+            always_meta = list(TOOL_INTENT_REGISTRY.get(name, {}).get("always_include_fields", []))
+            for af in always_meta:
+                if af not in new_args.get("fields", []):
+                    new_args.setdefault("fields", []).append(af)
 
             strict_kws = repair.get("strict_field_keywords", {})
 

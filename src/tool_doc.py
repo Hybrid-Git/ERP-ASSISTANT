@@ -39,17 +39,18 @@ TOOL_INTENT_REGISTRY = {
         "category": "customer",
         "multi_call_ok": True,
         "description": "Search customers or parties and return id, name, opening balance and opening type.",
-        "prompt_tips": "City/location alone: use search=city_name, NOT filters.city. Brand+city (e.g. Nykaa Bangalore): search=brand, filters=name.contains city. Customer name: search=name.",
+        "prompt_tips": "Customer name or ID (e.g. 'customer 76'): use search=customer_id_number, NOT a separate id field. City/location alone: use search=city_name. Brand+city: search=brand, filters=name.contains city. For name-only queries (not ledger/history), prefer this tool over get_customer_ledger.",
         "aliases": [
             "customer", "customers", "party", "parties", "client", "buyer", "grahak",
             "customer_report",
         ],
         "keywords": [
             "customer id", "party id", "customer name", "party name",
-            "opening balance", "opening type", "find customer", "search customer",
+            "find customer", "search customer", "contact info", "customer list",
         ],
         "fields": ["id", "name", "openingBalance", "openingType"],
         "default_fields": ["id", "name"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["customer id", "party id", "id"],
             "name": ["name", "customer name", "party name"],
@@ -69,6 +70,7 @@ TOOL_INTENT_REGISTRY = {
 
     "get_customer_ledger": {
         "category": "customer_ledger",
+        "multi_call_ok": True,
         "description": "Fetch customer ledger or account statement by customer_id; returns opening, current, closing balance and transactions.",
         "prompt_tips": "customer_id=int, dates YYYY-MM-DD, fields=ledgerName,opening,current,closing,period[,transactions].",
         "aliases": [
@@ -84,6 +86,7 @@ TOOL_INTENT_REGISTRY = {
             "total_rows", "total_pages", "transactions",
         ],
         "default_fields": ["ledgerName", "opening", "current", "closing", "period"],
+        "always_include_fields": ["ledgerName"],
         "field_aliases": {
             "ledgerName": ["ledger name"],
             "glName": ["gl name"],
@@ -100,9 +103,9 @@ TOOL_INTENT_REGISTRY = {
             "strict_field_keywords": {"sirf": ["closing"], "only": ["closing"]},
             "field_triggers": {"transactions": "transactions", "transaction": "transactions"},
             "fixed_fields": ["ledgerName", "opening", "current", "closing", "period"],
+            "param_aliases": {"customer": "customer_id", "party": "customer_id", "id": "customer_id"},
         },
     },
-
     "get_stock_levels": {
         "category": "stock",
         "multi_call_ok": True,
@@ -122,6 +125,7 @@ TOOL_INTENT_REGISTRY = {
             "closingQty", "closingRate", "closingValue", "isLowStock", "isOutOfStock",
         ],
         "default_fields": ["name"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "name": ["name", "product name", "item name"],
             "id": ["id", "product id", "item id"],
@@ -145,6 +149,7 @@ TOOL_INTENT_REGISTRY = {
 
     "get_gst_summary": {
         "category": "gst_report",
+        "multi_call_ok": True,
         "description": "Fetch GST summary/report by date range; supports B2B, B2C, exports, nil/exempt, credit notes and grand total rows.",
         "prompt_tips": "Categories: B2B=b2b, B2C Large=b2cLarge, B2C Small=b2cSmall, exports=exports, nil=nilRated, grandTotal=grandTotal. Single cat=>filter, multi=>no filter. NO search/term/limit params — these do NOT exist for this tool.",
         "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge"],
@@ -208,11 +213,13 @@ TOOL_INTENT_REGISTRY = {
                 "sgst": "sgst",
                 "cess": "cess",
             },
+            "param_aliases": {"start": "from_date", "end": "to_date"},
         },
     },
 
     "get_tds_outstanding": {
         "category": "tds_report",
+        "multi_call_ok": True,
         "description": "Fetch TDS outstanding/payable report by date range; supports section filters like 194C, 194J and 194I.",
         "prompt_tips": "Section filter (e.g. 194C): filters.section=194C. Dates YYYY-MM-DD.",
         "aliases": ["tds", "tds outstanding", "tds payable", "tds report"],
@@ -243,11 +250,13 @@ TOOL_INTENT_REGISTRY = {
                 "to_date": "",
                 "fields": ["recordType", "name", "totalAmount", "totalOutstanding", "period"],
             },
+            "param_aliases": {"section": "filters.section"},
         },
     },
 
     "get_tcs_outstanding": {
         "category": "tcs_report",
+        "multi_call_ok": True,
         "description": "Fetch TCS outstanding/payable report by date range; supports section filters like 206C.",
         "prompt_tips": "Section filter (e.g. 206C): filters.section=206C. Dates YYYY-MM-DD.",
         "aliases": ["tcs", "tcs outstanding", "tcs payable", "tcs report"],
@@ -278,6 +287,7 @@ TOOL_INTENT_REGISTRY = {
                 "to_date": "",
                 "fields": ["recordType", "name", "totalAmount", "totalOutstanding", "period"],
             },
+            "param_aliases": {"section": "filters.section"},
         },
     },
     "get_top_products": {
@@ -287,10 +297,10 @@ TOOL_INTENT_REGISTRY = {
         "prompt_tips": "sort_by=revenue|quantity|profit, dates YYYY-MM-DD, limit=N. Default sort_by=revenue, limit=10.",
         "aliases": [
             "top products", "top product", "best selling", "bestseller",
-            "top selling", "popular products", "top items",
+            "top selling", "top items",
         ],
         "keywords": [
-            "top products", "best selling", "bestseller", "popular",
+            "top products", "best selling", "bestseller",
             "top revenue", "top selling products", "top items",
         ],
         "fields": [
@@ -299,6 +309,7 @@ TOOL_INTENT_REGISTRY = {
             "totalProfit", "orderCount", "avgRate",
         ],
         "default_fields": ["name", "totalRevenue", "totalQty"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["product id", "id"],
             "name": ["name", "product name", "item name"],
@@ -323,6 +334,7 @@ TOOL_INTENT_REGISTRY = {
                 "profit": "totalProfit",
                 "orders": "orderCount",
             },
+            "param_aliases": {"revenue": "sort_by", "sales": "sort_by", "quantity": "sort_by", "profit": "sort_by", "orders": "sort_by", "time": "period", "duration": "period"},
         },
     },
     "get_popular_products": {
@@ -343,6 +355,7 @@ TOOL_INTENT_REGISTRY = {
             "totalProfit", "orderCount", "avgRate",
         ],
         "default_fields": ["name", "totalQty"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["product id", "id"],
             "name": ["name", "product name", "item name"],
@@ -359,6 +372,7 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "overwrite": False,
             "default_fields": ["name", "totalQty"],
+            "param_aliases": {"time": "period", "duration": "period"},
         },
     },
     "get_slow_moving_products": {
@@ -380,6 +394,7 @@ TOOL_INTENT_REGISTRY = {
             "totalProfit", "orderCount", "avgRate",
         ],
         "default_fields": ["name", "totalQty"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["product id", "id"],
             "name": ["name", "product name", "item name"],
@@ -396,6 +411,7 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "overwrite": False,
             "default_fields": ["name", "totalQty"],
+            "param_aliases": {"time": "period", "duration": "period"},
         },
     },
     "get_sales_summary": {
@@ -410,7 +426,6 @@ TOOL_INTENT_REGISTRY = {
         "keywords": [
             "sales summary", "sales report", "total sales", "overall sales",
             "revenue summary", "sales breakdown", "invoice summary",
-            "paid", "unpaid", "outstanding sales",
         ],
         "fields": [
             "category", "totalAmount", "totalSales", "totalTaxableAmount",
@@ -418,6 +433,7 @@ TOOL_INTENT_REGISTRY = {
             "totalQuantity", "invoiceCount", "averageInvoiceValue",
         ],
         "default_fields": ["category", "totalAmount", "totalSales", "totalTaxableAmount", "totalTax", "totalOutstanding", "totalPaid", "invoiceCount", "averageInvoiceValue"],
+        "always_include_fields": ["category"],
         "include_all_on_no_trigger": True,
         "field_aliases": {
             "category": ["category", "overall", "items", "income"],
@@ -436,6 +452,7 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "date_keywords": ["sales", "summary", "overall", "total", "bikri", "vikri"],
             "default_fields": ["category", "totalAmount", "totalSales", "totalTaxableAmount", "totalTax", "totalOutstanding", "totalPaid", "invoiceCount", "averageInvoiceValue"],
+            "param_aliases": {"start": "from_date", "end": "to_date"},
         },
     },
     "get_sales_trend": {
@@ -460,6 +477,7 @@ TOOL_INTENT_REGISTRY = {
             "percentage", "absolute",
         ],
         "default_fields": ["period", "category", "totalAmount", "totalSales", "totalTaxableAmount", "totalTax", "totalOutstanding", "totalPaid", "invoiceCount", "percentage", "absolute"],
+        "always_include_fields": ["period", "category"],
         "include_all_on_no_trigger": True,
         "field_aliases": {
             "period": ["period", "current", "previous", "growth"],
@@ -481,6 +499,7 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "date_keywords": ["trend", "comparison", "growth", "change", "month over month", "year over year"],
             "default_fields": ["period", "category", "totalAmount", "totalSales", "totalTaxableAmount", "totalTax", "totalOutstanding", "totalPaid", "invoiceCount", "percentage", "absolute"],
+            "param_aliases": {"time": "period", "compare": "compare_with"},
         },
     },
     "get_top_customer": {
@@ -501,6 +520,7 @@ TOOL_INTENT_REGISTRY = {
             "id", "name", "totalRevenue", "orderCount",
         ],
         "default_fields": ["name", "totalRevenue", "orderCount"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["customer id", "id"],
             "name": ["name", "customer name", "party name"],
@@ -510,7 +530,7 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "overwrite": False,
             "default_fields": ["name", "totalRevenue", "orderCount"],
-            "param_aliases": {"revenue": "sort_by"},
+            "param_aliases": {"revenue": "sort_by", "orders": "sort_by", "spending": "sort_by", "time": "period", "duration": "period"},
         },
     },
     "get_top_vendor": {
@@ -530,6 +550,7 @@ TOOL_INTENT_REGISTRY = {
             "id", "name", "totalPurchases", "billCount",
         ],
         "default_fields": ["name", "totalPurchases", "billCount"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["vendor id", "supplier id", "id"],
             "name": ["name", "vendor name", "supplier name"],
@@ -539,6 +560,7 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "overwrite": False,
             "default_fields": ["name", "totalPurchases", "billCount"],
+            "param_aliases": {"purchases": "sort_by", "bills": "sort_by", "spending": "sort_by", "time": "period", "duration": "period"},
         },
     },
     "get_purchase_summary": {
@@ -561,6 +583,7 @@ TOOL_INTENT_REGISTRY = {
             "totalPaid", "totalQuantity", "billCount", "averageBillValue",
         ],
         "default_fields": ["category", "totalAmount", "totalPurchases", "totalExpenses", "totalTaxableAmount", "totalTax", "totalOutstanding", "totalPaid", "billCount", "averageBillValue"],
+        "always_include_fields": ["category"],
         "include_all_on_no_trigger": True,
         "field_aliases": {
             "category": ["category", "overall", "items", "expenses"],
@@ -579,6 +602,7 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "date_keywords": ["purchase", "kharidi", "khareedari", "expense", "bill"],
             "default_fields": ["category", "totalAmount", "totalPurchases", "totalExpenses", "totalTaxableAmount", "totalTax", "totalOutstanding", "totalPaid", "billCount", "averageBillValue"],
+            "param_aliases": {"start": "from_date", "end": "to_date"},
         },
     },
     "get_search_ledgers": {
@@ -600,6 +624,7 @@ TOOL_INTENT_REGISTRY = {
             "openingBalance", "openingType", "gstNumber", "glGroup",
         ],
         "default_fields": ["id", "name", "openingBalance", "openingType", "glGroup"],
+        "always_include_fields": ["name", "glGroup"],
         "field_aliases": {
             "id": ["ledger id", "id"],
             "name": ["name", "ledger name"],
@@ -639,6 +664,7 @@ TOOL_INTENT_REGISTRY = {
             "city", "state", "gstNumber", "openingBalance", "openingType",
         ],
         "default_fields": ["id", "name"],
+        "always_include_fields": ["name"],
         "field_aliases": {
             "id": ["vendor id", "supplier id", "id"],
             "name": ["name", "vendor name", "supplier name"],
@@ -661,16 +687,17 @@ TOOL_INTENT_REGISTRY = {
         "category": "sales",
         "multi_call_ok": True,
         "description": "Fetch outstanding/unpaid sales invoices with aging details, invoice amounts, due dates, and summary totals.",
-        "prompt_tips": "from_date/to_date YYYY-MM-DD, sort_by=daysOverdue|invoiceDate|outstanding, sort_order=asc|desc. Does NOT support searching by invoice number — this lists invoices by date range/aging only. Summary row (recordType=outstandingSalesInvoices, name=Summary) has totalInvoices, totalOutstanding, totalOverdue, totalCurrent.",
+        "prompt_tips": "Lists invoices by DATE RANGE or AGING only. Does NOT accept invoice_number as a filter param — the API returns ALL invoices in range. If user asks for a specific invoice number, use get_overdue_invoices instead (it has 'find by invoice' keywords) and client-side filters.invoiceNo after fetching. Summary row (recordType=outstandingSalesInvoices, name=Summary) has totalInvoices, totalOutstanding, totalOverdue, totalCurrent.",
         "aliases": [
             "outstanding sales", "outstanding invoices", "pending invoices",
             "unpaid invoices", "sales due", "invoice outstanding",
-            "due invoices", "overdue invoices", "invoice aging",
+            "due invoices", "invoice aging",
             "pending payments", "outstanding amount",
         ],
         "keywords": [
-            "outstanding", "pending", "unpaid", "due", "overdue",
-            "aging", "invoice", "invoices", "receivable",
+            "outstanding", "pending", "unpaid",
+            "sales invoices", "all invoices", "invoice list",
+            "receivable",
         ],
         "fields": [
             "recordType", "invoiceId", "invoiceNo", "invoiceDate", "dueDate",
@@ -682,7 +709,7 @@ TOOL_INTENT_REGISTRY = {
             "total_rows", "total_pages", "period",
         ],
         "default_fields": ["invoiceNo", "invoiceDate", "ledgerName", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
-        "always_include_fields": ["period"],
+        "always_include_fields": ["period", "invoiceNo", "ledgerName"],
         "field_aliases": {
             "recordType": ["record type"],
             "invoiceId": ["invoice id"],
@@ -711,22 +738,22 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "date_keywords": ["outstanding", "invoice", "sales", "due", "pending", "unpaid", "receivable"],
             "default_fields": ["invoiceNo", "invoiceDate", "ledgerName", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
-            "param_aliases": {"invoiceNumber": "invoiceNo", "customerName": "ledgerName", "outstandingAmount": "outstanding"},
+            "param_aliases": {"customerName": "ledgerName", "outstandingAmount": "outstanding"},
         },
     },
     "get_outstanding_purchase_invoices": {
         "category": "purchase",
         "multi_call_ok": True,
         "description": "Fetch outstanding/unpaid purchase invoices with aging details, bill amounts, due dates, and summary totals.",
-        "prompt_tips": "from_date/to_date YYYY-MM-DD, sort_by=daysOverdue|invoiceDate|outstanding, sort_order=asc|desc. Does NOT support searching by invoice number — this lists invoices by date range/aging only. Summary row (recordType=outstandingPurchaseInvoices, name=Summary) has totalInvoices, totalOutstanding, totalOverdue, totalCurrent.",
+        "prompt_tips": "Lists bills by DATE RANGE or AGING only. Does NOT accept invoice_number as a filter param — the API returns ALL purchase invoices in range. If user asks for a specific invoice/bill number, use get_overdue_invoices instead (client-side filters.invoiceNo after fetching). Summary row (recordType=outstandingPurchaseInvoices, name=Summary) has totalInvoices, totalOutstanding, totalOverdue, totalCurrent.",
         "aliases": [
             "outstanding purchases", "outstanding purchase invoices", "pending purchase invoices",
             "unpaid purchase invoices", "bills payable", "creditors",
             "payable invoices", "vendor outstanding", "pending bills",
         ],
         "keywords": [
-            "outstanding", "pending", "unpaid", "due", "overdue",
-            "payable", "creditor", "bill", "bills",
+            "outstanding", "pending", "unpaid",
+            "payable", "creditor", "bills payable",
         ],
         "fields": [
             "recordType", "invoiceId", "invoiceNo", "invoiceDate", "dueDate",
@@ -738,7 +765,7 @@ TOOL_INTENT_REGISTRY = {
             "total_rows", "total_pages", "period",
         ],
         "default_fields": ["invoiceNo", "invoiceDate", "ledgerName", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
-        "always_include_fields": ["period"],
+        "always_include_fields": ["period", "invoiceNo", "ledgerName"],
         "field_aliases": {
             "recordType": ["record type"],
             "invoiceId": ["invoice id"],
@@ -767,14 +794,14 @@ TOOL_INTENT_REGISTRY = {
             "overwrite": False,
             "date_keywords": ["outstanding", "purchase", "invoice", "payable", "creditor", "vendor", "bill"],
             "default_fields": ["invoiceNo", "invoiceDate", "ledgerName", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
-            "param_aliases": {"invoiceNumber": "invoiceNo", "customerName": "ledgerName", "outstandingAmount": "outstanding"},
+            "param_aliases": {"customerName": "ledgerName", "outstandingAmount": "outstanding"},
         },
     },
     "get_overdue_invoices": {
         "category": "sales",
         "multi_call_ok": True,
         "description": "Fetch overdue invoices (both sales receivables and purchase payables) past their due date, with aging details and summary totals.",
-        "prompt_tips": "invoice_type=SALES|PURCHASE|BOTH, as_of_date YYYY-MM-DD, sort_by=daysOverdue|invoiceDate|outstanding, sort_order=asc|desc. Default invoice_type=BOTH. Does NOT support searching by invoice number. Filter by invoiceCategory=RECEIVABLE|PAYABLE to separate sales vs purchase. Summary row (recordType=overdueInvoices, name=Summary) has totalInvoices, totalOverdue, totalReceivables, totalPayables, receivablesCount, payablesCount.",
+        "prompt_tips": "Lists overdue invoices by DATE RANGE or AGING only. Does NOT support direct invoice-number lookup as an API param — fetch all and use client-side filters.invoiceNo to find a specific invoice (invoice_number IN filters is NOT a server-side filter). invoice_type=SALES|PURCHASE|BOTH, as_of_date YYYY-MM-DD. Summary row (recordType=overdueInvoices, name=Summary) has totalInvoices, totalOverdue, totalReceivables, totalPayables, receivablesCount, payablesCount.",
         "aliases": [
             "overdue invoices", "overdue bills", "overdue payments",
             "past due", "past due invoices", "delayed payments",
@@ -782,8 +809,9 @@ TOOL_INTENT_REGISTRY = {
             "overdue sales invoices", "overdue purchase invoices",
         ],
         "keywords": [
-            "overdue", "past due", "delayed", "late",
+            "overdue", "past due", "delayed", "late", "expired",
             "overdue invoice", "overdue bills", "overdue payment",
+            "invoice number lookup", "find by invoice",
         ],
         "fields": [
             "recordType", "invoiceId", "invoiceNo", "invoiceDate", "dueDate",
@@ -796,6 +824,7 @@ TOOL_INTENT_REGISTRY = {
             "total_rows", "total_pages",
         ],
         "default_fields": ["invoiceNo", "invoiceDate", "dueDate", "ledgerName", "invoiceCategory", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
+        "always_include_fields": ["invoiceNo", "ledgerName", "invoiceCategory"],
         "field_aliases": {
             "recordType": ["record type"],
             "invoiceId": ["invoice id"],
@@ -823,8 +852,9 @@ TOOL_INTENT_REGISTRY = {
         },
         "repair": {
             "overwrite": False,
+            "date_keywords": ["overdue", "invoice", "past due", "delayed", "late"],
             "default_fields": ["invoiceNo", "invoiceDate", "dueDate", "ledgerName", "invoiceCategory", "netAmount", "outstanding", "daysOverdue", "agingBucket"],
-            "param_aliases": {"type": "invoice_type", "invoiceNumber": "invoiceNo", "customerName": "ledgerName", "outstandingAmount": "outstanding"},
+            "param_aliases": {"type": "invoice_type", "customerName": "ledgerName", "outstandingAmount": "outstanding", "sales": "invoice_type", "purchase": "invoice_type", "receivable": "invoice_type", "payable": "invoice_type"},
         },
     },
 }

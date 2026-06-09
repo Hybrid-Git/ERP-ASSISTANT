@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 import os  # noqa: E402
 import yaml  # noqa: E402
@@ -51,6 +51,8 @@ summary_llm = ChatOpenAI(
     },
 )
 
+print(f"LLM model loaded: {llm.model}")
+print(f"Embedding model loaded: {embedding_model.model}")
 print("LLM and embedding model initialised!")
 
 # ── API config (env vars) ──
