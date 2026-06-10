@@ -167,12 +167,12 @@ def now():
 
 TRANSLATOR_PROMPT_BASE = """Normalize Hinglish/Hindi/Gujarati → clean English JSON.
 
-SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low","query_type":"erp_query|conversational|mixed","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
+SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low","query_type":"erp_query|conversational|ood|mixed","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
 
 WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, rakam=amount, baki=outstanding, kam=less, zyada=greater, dikhao/batao=show, aur=and, kitne/kitna=how_many/much, hai/ho=is_are, kya=what, konse/konsa/jiska=which, kyu=why, chaia/chahiye=need, nahi=not, hamare/mera/uska/uski=our/my/his, wala/wale=with, sari/saari=all
 
 RULES:
-- query_type: "conversational" if asking about conversation history (what we discussed, what was asked, recap, etc.), "erp_query" if asking about ERP data (customers/stock/GST/invoices), "mixed" if asking about both history AND data.
+- query_type: "ood" if asking about non-ERP topics (movies, sports, recipes, general knowledge, news, weather, etc.), "conversational" if asking about conversation history (what we discussed, what was asked, recap, etc.), "erp_query" if asking about ERP data (customers/stock/GST/invoices), "mixed" if asking about both history AND data.
 - Preserve IDs/HSN/dates/names. Clean English → language="english", query unchanged. Bare number/name → treat as lookup.
 
 EXAMPLES:
@@ -184,6 +184,8 @@ Q: kyu nahi mila
 A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high","query_type":"erp_query"}
 Q: hamne sabse pehle kya pucha tha
 A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}
+Q: muje avengers ke bare mai janna hai
+A: {"canonical_query":"Tell me about Avengers","document_type":"general","language":"hinglish","confidence":"high","query_type":"ood"}
 /no_think"""
 
 
@@ -483,6 +485,26 @@ async def translator_node(state: MainState) -> MainState:
             "query_type": "unknown",
         }
 
+_STOP_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "doing", "has", "have", "had",
+    "and", "or", "but", "if", "because", "as", "until", "while", "of",
+    "at", "by", "for", "with", "about", "between", "into", "through",
+    "during", "before", "after", "above", "below", "to", "from",
+    "up", "down", "in", "on", "off", "out", "over", "under",
+    "again", "further", "then", "once", "here", "there",
+    "when", "where", "why", "how", "all", "each", "every", "both",
+    "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very",
+    "it", "its", "this", "that", "these", "those",
+    "i", "me", "my", "myself", "you", "your", "yourself",
+    "he", "him", "his", "himself", "she", "her", "hers", "herself",
+    "we", "us", "our", "ours", "ourselves", "they", "them", "their",
+    "theirs", "themselves", "what", "which", "who", "whom",
+    "ka", "ke", "ki", "ko", "se", "mai", "mein", "hai", "ho",
+    "hu", "hain", "tha", "the", "thi", "thay", "hoga",
+}
+
 def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     """Hybrid: embedding recall (dense) + Jaccard word overlap (sparse)."""
     if not _tool_embeddings:
@@ -495,7 +517,7 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     except Exception:
         return []
 
-    query_tokens = set(query_part.lower().split())
+    query_tokens = {t for t in query_part.lower().split() if t not in _STOP_WORDS}
 
     scores = []
     for tool_name, tool_emb in _tool_embeddings.items():
@@ -503,7 +525,7 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
 
         meta = registry.get(tool_name, {})
         tool_text = f"{meta.get('description', '')} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
-        tool_tokens = set(tool_text.lower().split())
+        tool_tokens = {t for t in tool_text.lower().split() if t not in _STOP_WORDS}
         containment = len(query_tokens & tool_tokens) / max(len(query_tokens), 1) if tool_tokens else 0.0
 
         combined = 0.7 * emb_sim + 0.3 * containment
@@ -658,14 +680,41 @@ async def semantic_search(state: MainState) -> MainState:
 
         print(f"Query parts for metadata matching: {query_parts}")
 
+        GREETING_PATTERNS = [
+            r"^(hello|hi|hey|hii|hiii|heyy|holla|namaste|namaskar|vanakkam|howdy|greetings|salam)\s*[!?.]*$",
+            r"^(good\s*morning|good\s*afternoon|good\s*evening|good\s*night|gm|gn)\s*[!?.]*$",
+            r"^(hey\s+there|hi\s+there|hello\s+there)\s*[!?.]*$",
+            r"^(how\s+are\s+(you|u)|how\s+are\s+you\s+doing|how's\s+it\s+going|what's\s+up|wassup|sup)\s*[!?.]*$",
+            r"^(kaise\s+ho|kya\s+haal|kya\s+kar\s+rahe|kya\s+kar\s+raha|kya\s+kar\s+rahi)\s*[!?.]*$",
+            r"^(aap|ap|tu|tum|tumlog)\s+kaise\s+ho\s*[!?.]*$",
+            r"^(aap|ap)\s+kese\s+ho\s*[!?.]*$",
+            r"^(hello|hi|hey|hii|hiii|heyy|holla)\s+how\s+(are|r)\s+(you|u)\s*[!?.]*$",
+            r"^(hello|hi|hey|hii|hiii|heyy|holla)\s+(how's|how is)\s+(it|everyone|you|things|going)\s*[!?.]*$",
+        ]
         query_type = (state.get("query_type") or "").strip()
         if query_type == "conversational":
-            print(f"Translator flagged as conversational — no tool needed: {user_query}")
+            # Check if translator misclassified a greeting (e.g. "ap kaise ho?" → "how are you")
+            full_query = re.sub(r"[,/;:.!?]+", " ", original_query.strip().lower())
+            full_query = re.sub(r"\s+", " ", full_query).strip()
+            if any(re.match(p, full_query) for p in GREETING_PATTERNS):
+                print(f"Translator misclassified greeting as conversational: {user_query}")
+                # Fall through to greeting handling below
+            else:
+                print(f"Translator flagged as conversational — no tool needed: {user_query}")
+                return {
+                    "retrieved_tools": [],
+                    "selected_tools": [],
+                    "query_parts": query_parts,
+                    "skip_router": True,
+                }
+        if query_type == "ood":
+            print(f"Translator flagged as out-of-domain — no tool needed: {user_query}")
             return {
                 "retrieved_tools": [],
                 "selected_tools": [],
                 "query_parts": query_parts,
                 "skip_router": True,
+                "query_type": "ood",
             }
 
         full_meta = any(
@@ -687,25 +736,48 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
-        GREETING_PATTERNS = [
-            r"^(hello|hi|hey|hii|hiii|heyy|holla|namaste|namaskar|vanakkam|howdy|greetings|salam)\\s*[!?.]*$",
-            r"^(good\\s*morning|good\\s*afternoon|good\\s*evening|good\\s*night|gm|gn)\\s*[!?.]*$",
-            r"^(hey\\s+there|hi\\s+there|hello\\s+there)\\s*[!?.]*$",
-            r"^(how\\s+are\\s+(you|u)|how\\s+are\\s+you\\s+doing|how\\'s\\s+it\\s+going|what\\'s\\s+up|wassup|sup)\\s*[!?.]*$",
-            r"^(kaise\\s+ho|kya\\s+haal|kya\\s+kar\\s+rahe|kya\\s+kar\\s+raha|kya\\s+kar\\s+rahi)\\s*[!?.]*$",
+        CAPABILITY_PATTERNS = [
+            r"what (can|do) (you|u) do",
+            r"what('s| is) your purpose",
+            r"what ('s|is) (this |the )?(chatbot|assistant|bot|tool) (for|about)",
+            r"(tell|show) me (about|what) (you|u) (can |)do",
+            r"what are your capabilities",
+            r"how (can|do) (you|u) (help|assist)",
+            r"what kind of (questions|queries) (can|do) (you|u) (answer|handle)",
+            r"what is the use of (this |the )?(chatbot|assistant|bot|tool)",
+            r"(what|which) (all |)(things|work|tasks) (can|do) (you|u) (do|help|handle)",
+            r"(kaam|use|upayog) kya hai",
+            r"kya kar sakte ho",
+            r"kya (kaam|sahayta) kar sakte ho",
+            r"aap kya kar sakte hain",
+            r"ye (kya|kaisa) (hai|tool|chatbot)",
+            r"aap (kya|kaise) (help|madad|sahayta) kar (sakte|sakta)",
         ]
-        full_query = original_query.strip().lower()
+        full_query = re.sub(r"[,/;:.!?]+", " ", original_query.strip().lower())
+        full_query = re.sub(r"\s+", " ", full_query).strip()
         is_greeting = any(re.match(p, full_query) for p in GREETING_PATTERNS)
         if is_greeting:
             has_erp_keywords = any(kw in full_query for kw in ROUTE_KEYWORDS)
             if not has_erp_keywords:
-                print(f"Greeting detected — responding with welcome message: {user_query}")
+                print(f"Greeting detected — routing to LLM for natural response: {user_query}")
                 return {
                     "retrieved_tools": [],
                     "selected_tools": [],
                     "query_parts": query_parts,
                     "skip_router": True,
-                    "memory_answer": "Hello! I am your Chapter1 ERP assistant...",
+                    "query_type": "greeting",
+                }
+        is_capability = any(re.search(p, full_query, re.IGNORECASE) for p in CAPABILITY_PATTERNS)
+        if is_capability:
+            has_erp_keywords = any(kw in full_query for kw in ROUTE_KEYWORDS)
+            if not has_erp_keywords:
+                print(f"Capability query detected — routing to LLM: {user_query}")
+                return {
+                    "retrieved_tools": [],
+                    "selected_tools": [],
+                    "query_parts": query_parts,
+                    "skip_router": True,
+                    "query_type": "capability",
                 }
 
         selected_tool_groups: list[list[str]] = []
@@ -767,7 +839,7 @@ async def semantic_search(state: MainState) -> MainState:
 
         if not selected_tools:
             has_erp_kw = any(kw in (original_query or "").lower() for kw in ROUTE_KEYWORDS)
-            if has_erp_kw or document_type:
+            if has_erp_kw or (document_type and document_type not in {"routeable", "unknown", ""}):
                 fallback_tools = []
                 for q in [original_query, canonical_query]:
                     if q:
@@ -801,8 +873,8 @@ async def semantic_search(state: MainState) -> MainState:
             }
 
         OOD_PATTERNS = [
-            r"^(who|what|why|when|where|how)\\s+(is|are|was|were|does|do|did|can|could|will|would|shall|should)\\s+",
-            r"(tell me about|explain|describe|define)\\s",
+            r"^(who|what|why|when|where|how)\s+(is|are|was|were|does|do|did|can|could|will|would|shall|should)\s+",
+            r"(tell me about|explain|describe|define)\s",
         ]
         raw_queries = [q for q in [original_query, canonical_query] if q]
         has_erp_kw = any(kw in (original_query or "").lower() for kw in ROUTE_KEYWORDS)
@@ -827,14 +899,13 @@ async def semantic_search(state: MainState) -> MainState:
                                 "skip_router": True,
                             }
 
-        print("No confident tool match. Marking query unsupported.")
+        print("No confident tool match. Marking query out-of-domain.")
         return {
             "retrieved_tools": [],
             "selected_tools": [],
             "query_parts": query_parts,
             "skip_router": True,
-            "unsupported": True,
-            "unsupported_reason": "I am an ERP assistant...",
+            "query_type": "ood",
         }
 
     except Exception as e:
@@ -988,6 +1059,17 @@ def _build_memory_context(messages: list, max_exchanges: int = 3) -> str:
     return ""
 
 
+_REFERENCE_PATTERN = re.compile(
+    r"\b(uska|uski|uske|iska|iski|iske|unka|unki|unke|inka|inki|inke"
+    r"|this|that|these|those|its|it\b|they|them|their|he\b|she|his|her"
+    r"|previous|last|first|same|also|too|again|another|previous"
+    r"|pehle|pichle|pichli|pahle|baad\b|bad\b|aage"
+    r"|aur|bhi\b|or\b|waise|aise|vaise"
+    r"|kitne|kitna|konse|konsa|kaun\b|kaunse|kis\b|kisi"
+    r"|dono|donu|wahi|wahee|yahi|yee|wohi|wohee)\b",
+    re.IGNORECASE,
+)
+
 def build_system_prompt(
     user_query: str,
     selected_tools: list[str],
@@ -996,6 +1078,7 @@ def build_system_prompt(
     messages: list | None = None,
     last_tool_call: dict | None = None,
     conversation_context: dict | None = None,
+    original_query: str = "",
 ) -> str:
     lines = [
         "You are an ERP assistant. Use the available tools to answer the user.",
@@ -1016,7 +1099,9 @@ def build_system_prompt(
         "- CRITICAL: When the current query requires a DIFFERENT tool than the previous one (e.g. switching from get_customer to get_stock_levels), you MUST clear ALL old search terms, filters, and parameters. Reuse parameters ONLY within the same tool.",
     ]
 
-    if messages:
+    check_query = f"{original_query} {user_query}" if original_query else user_query
+    is_follow_up = bool(_REFERENCE_PATTERN.search(check_query)) or len(user_query.split()) <= 3
+    if messages and is_follow_up:
         recent_calls = _get_recent_tool_calls(messages)
         if recent_calls:
             lines.append("")
@@ -1446,6 +1531,112 @@ async def chat_model_node(state: MainState):
         print("available_tool_names:", [tool.name for tool in available_tools])
 
         if not available_tools:
+            query_type = (state.get("query_type") or "").strip()
+
+            # ── Greeting: LLM generates warm, varied greeting ──
+            if query_type == "greeting":
+                greeting_prompt = (
+                    "You are an ERP assistant. The user just greeted you.\n"
+                    "Respond warmly and naturally like a friendly human. "
+                    "Vary your greeting each time — don't repeat the same words. "
+                    "You can say hi hello namaste, welcome them, and briefly offer help. "
+                    "Keep it to 1-2 short sentences. Be warm, not robotic.\n"
+                    "Do NOT mention tools, APIs, or technical details. "
+                    "Speak in the same language the user used (English or Hinglish).\n"
+                    "/no_think"
+                )
+                try:
+                    resp = await summary_llm.ainvoke([
+                        SystemMessage(content=greeting_prompt),
+                        HumanMessage(content=state.get("original_query", "")),
+                    ])
+                    reason = (getattr(resp, "content", "") or "").strip()
+                except Exception:
+                    reason = "Hello! How can I help you with your ERP data today?"
+                print(f"[CHAT MODEL] Greeting response: {reason}")
+                return {
+                    "messages": [
+                        HumanMessage(content=user_query),
+                        AIMessage(content=reason),
+                    ],
+                    "memory_answer": reason,
+                    "loop_count": loop_count + 1,
+                }
+
+            # ── Capability: LLM describes what the assistant can do ──
+            if query_type == "capability":
+                tool_descriptions = []
+                for tname, tmeta in TOOL_INTENT_REGISTRY.items():
+                    desc = tmeta.get("description", "")
+                    aliases = tmeta.get("aliases", [])
+                    alias_str = ", ".join(aliases[:3])
+                    tool_descriptions.append(f"- {alias_str}: {desc}")
+                tools_text = "\n".join(tool_descriptions)
+                cap_prompt = (
+                    "You are an ERP assistant. The user asked about what you can do.\n"
+                    "Describe your capabilities conversationally, like a helpful human.\n"
+                    "Here are the tools/features available to you:\n"
+                    f"{tools_text}\n\n"
+                    "Explain in a natural, friendly way — not as a list of technical tools. "
+                    "Say something like 'I can help you look up customers, check stock levels, "
+                    "view GST reports, find outstanding invoices, and more.' "
+                    "Keep it to 2-4 sentences. Be inviting and conversational. "
+                    "Speak in the same language as the user (English or Hinglish).\n"
+                    "Do NOT mention tool names, APIs, or technical details.\n"
+                    "/no_think"
+                )
+                try:
+                    resp = await summary_llm.ainvoke([
+                        SystemMessage(content=cap_prompt),
+                        HumanMessage(content=state.get("original_query", "")),
+                    ])
+                    reason = (getattr(resp, "content", "") or "").strip()
+                except Exception:
+                    reason = "I can help you with customer details, stock levels, GST reports, TDS/TCS, sales summaries, invoices, and more. Just ask!"
+                print(f"[CHAT MODEL] Capability response: {reason}")
+                return {
+                    "messages": [
+                        HumanMessage(content=user_query),
+                        AIMessage(content=reason),
+                    ],
+                    "memory_answer": reason,
+                    "loop_count": loop_count + 1,
+                }
+
+            # ── OOD (out-of-domain): LLM generates polite refusal ──
+            if query_type == "ood":
+                ood_prompt = (
+                    "You are an ERP assistant. The user asked something OUTSIDE your domain.\n"
+                    "CRITICAL: Do NOT answer the user's question. You do NOT have this information.\n"
+                    "Instead, politely refuse and say you can only help with ERP-related "
+                    "business queries (customers, stock, GST, TDS, TCS, invoices, sales, etc.).\n"
+                    "Example: 'Sorry, I can only assist with ERP-related queries like customers, stock, GST, and invoices.'\n"
+                    "Be friendly — don't sound robotic or defensive. "
+                    "Suggest what you CAN help with. "
+                    "Keep it to 1-2 short sentences. "
+                    "Speak in the same language as the user (English or Hinglish).\n"
+                    "Do NOT answer the question. Do NOT provide any information about the topic.\n"
+                    "/no_think"
+                )
+                try:
+                    resp = await summary_llm.ainvoke([
+                        SystemMessage(content=ood_prompt),
+                        HumanMessage(content=state.get("original_query", "")),
+                    ])
+                    reason = (getattr(resp, "content", "") or "").strip()
+                except Exception:
+                    reason = "I'm an ERP assistant — I can help with customers, stock, GST, TDS, invoices, and sales data. Could you ask about any of these?"
+                print(f"[CHAT MODEL] OOD response: {reason}")
+                return {
+                    "messages": [
+                        HumanMessage(content=user_query),
+                        AIMessage(content=reason),
+                    ],
+                    "memory_answer": reason,
+                    "loop_count": loop_count + 1,
+                }
+
+            # ── Existing hardcoded memory_answer/unsupported fallback ──
             existing_memory_answer = state.get("memory_answer", "")
             if existing_memory_answer:
                 print(f"[CHAT MODEL] Using pre-set memory_answer: {existing_memory_answer}")
@@ -1521,6 +1712,7 @@ async def chat_model_node(state: MainState):
 
         system_prompt_text = build_system_prompt(
             user_query=user_query,
+            original_query=state.get("original_query", ""),
             selected_tools=selected_tools,
             query_parts=query_parts,
             summary=summary,
@@ -3157,6 +3349,16 @@ async def response_generation_node(state: MainState):
     conversation_context = state.get("conversation_context", {})
     system_prompt = (
         "You are an ERP assistant. Write a SHORT natural conversational reply using ONLY the tool results below.\n"
+        "\n"
+        "PERSONALITY:\n"
+        "- Be warm and conversational — like a helpful human, not a robot.\n"
+        "- Vary your phrasing. Don't repeat the same sentence patterns.\n"
+        "- If the user used Hinglish/Hindi, mirror their language and tone.\n"
+        "- Never say 'As an AI' or 'As a language model' — just be helpful.\n"
+        "- End with an inviting tone when appropriate (e.g., 'Kuch aur?', 'Anything else?').\n"
+        "- If the user asks about something you already covered earlier, "
+        "refer back naturally: 'Jaisa aapne pehle pucha tha...'\n"
+        "\n"
         "HARD RULES:\n"
     )
     if previous_summary:
