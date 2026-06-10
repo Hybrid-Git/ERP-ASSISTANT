@@ -32,6 +32,11 @@ TOOL_INTENT_REGISTRY = {
             "keyword_args": {"nykaa": {"search": "Nykaa"}},
             "param_aliases": {"name": "search"},
         },
+        "record_filters": [
+            {"id_key": "party_id", "match_field": "id", "match_type": "exact"},
+            {"id_key": "name", "match_field": "name", "match_type": "icontains"},
+            {"id_key": "city", "match_field": "city", "match_type": "icontains"},
+        ],
     },
     "get_customer_ledger": {
         "category": "customer_ledger",
@@ -51,6 +56,9 @@ TOOL_INTENT_REGISTRY = {
             "date_keywords": ["customer", "ledger", "closing", "opening", "balance"],
             "param_aliases": {"customer": "customer_id", "party": "customer_id", "id": "customer_id"},
         },
+        "record_filters": [
+            {"id_key": "party_id", "match_field": "customerId", "match_type": "exact"},
+        ],
     },
     "get_stock_levels": {
         "category": "stock",
@@ -69,6 +77,11 @@ TOOL_INTENT_REGISTRY = {
             "param_aliases": {"name": "term"},
             "low_stock_only_keywords": ["low stock", "out of stock", "out-of-stock", "stock out", "low inventory"],
         },
+        "record_filters": [
+            {"id_key": "hsn_code", "match_field": "hsnCode", "match_type": "exact"},
+            {"id_key": "sku", "match_field": "name", "match_type": "icontains"},
+            {"id_key": "name", "match_field": "name", "match_type": "icontains"},
+        ],
     },
     "get_gst_summary": {
         "category": "gst_report",
@@ -94,6 +107,9 @@ TOOL_INTENT_REGISTRY = {
             "date_keywords": ["gst", "b2b", "grand total", "b2c", "exports", "nil", "exempt"],
             "param_aliases": {"start": "from_date", "end": "to_date"},
         },
+        "record_filters": [
+            {"id_key": "gst_category", "match_field": "category", "match_type": "exact_case_insensitive"},
+        ],
     },
     "get_tds_outstanding": {
         "category": "tds_report",
@@ -107,6 +123,9 @@ TOOL_INTENT_REGISTRY = {
             "base_args": {"from_date": "", "to_date": ""},
             "date_keywords": ["tds"],
         },
+        "record_filters": [
+            {"id_key": "tds_section", "match_field": "section", "match_type": "exact"},
+        ],
     },
     "get_tcs_outstanding": {
         "category": "tcs_report",
@@ -120,6 +139,9 @@ TOOL_INTENT_REGISTRY = {
             "base_args": {"from_date": "", "to_date": ""},
             "date_keywords": ["tcs"],
         },
+        "record_filters": [
+            {"id_key": "tds_section", "match_field": "section", "match_type": "exact"},
+        ],
     },
     "get_top_products": {
         "category": "analytics",
@@ -284,6 +306,10 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "param_aliases": {"name": "search_term"},
         },
+        "record_filters": [
+            {"id_key": "name", "match_field": "name", "match_type": "icontains"},
+            {"id_key": "city", "match_field": "city", "match_type": "icontains"},
+        ],
     },
     "get_search_vendors": {
         "category": "vendor",
@@ -301,6 +327,10 @@ TOOL_INTENT_REGISTRY = {
         "repair": {
             "param_aliases": {"name": "search"},
         },
+        "record_filters": [
+            {"id_key": "name", "match_field": "name", "match_type": "icontains"},
+            {"id_key": "city", "match_field": "city", "match_type": "icontains"},
+        ],
     },
     "get_outstanding_sales_invoices": {
         "category": "sales",
@@ -322,6 +352,10 @@ TOOL_INTENT_REGISTRY = {
             "date_keywords": ["outstanding", "invoice", "sales", "due", "pending", "unpaid", "receivable"],
             "param_aliases": {},
         },
+        "record_filters": [
+            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact"},
+            {"id_key": "party_id", "match_field": "ledgerId", "match_type": "exact"},
+        ],
     },
     "get_outstanding_purchase_invoices": {
         "category": "purchase",
@@ -341,6 +375,10 @@ TOOL_INTENT_REGISTRY = {
             "date_keywords": ["outstanding", "purchase", "invoice", "payable", "creditor", "vendor", "bill"],
             "param_aliases": {},
         },
+        "record_filters": [
+            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact"},
+            {"id_key": "party_id", "match_field": "ledgerId", "match_type": "exact"},
+        ],
     },
     "get_overdue_invoices": {
         "category": "sales",
@@ -362,6 +400,10 @@ TOOL_INTENT_REGISTRY = {
             "date_keywords": ["overdue", "invoice", "past due", "delayed", "late"],
             "param_aliases": {"type": "invoice_type", "sales": "invoice_type", "purchase": "invoice_type", "receivable": "invoice_type", "payable": "invoice_type"},
         },
+        "record_filters": [
+            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact"},
+            {"id_key": "party_id", "match_field": "ledgerId", "match_type": "exact"},
+        ],
     },
 }
 

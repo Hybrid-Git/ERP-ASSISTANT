@@ -44,6 +44,12 @@ INVOICE_PATTERNS = {
     "purchase": [r"\bPR-?\d+\b"],
 }
 
+# Shared invoice number patterns (from config — single source of truth for extraction)
+INVOICE_NO_PATTERNS = get_cfg("identifier_patterns", "invoice_no", default=[
+    r'\bPR[-/]?\d+\b', r'\bA/\d{4}/C\d{4}\b', r'\bAI/\d{4}/\d{4}\b',
+    r'\bAI/\d{2}-\d{2}/\d{3,4}\b', r'\bSI[-/]?\d+\b', r'\bOUT[-/]?\d+\b',
+])
+
 TOOL_DOMAINS = {
     "get_customer": ["customer"],
     "get_customer_ledger": ["customer"],
@@ -1716,6 +1722,17 @@ async def chat_model_node(state: MainState):
         for tn in called_names:
             covered_domains |= set(TOOL_DOMAINS.get(tn, []))
         combined_q = (f"{original_query or ''} {state.get('canonical_query', '') or ''}").lower()
+
+        # Extract invoice number from query for auto-fill
+        query_invoice_no = None
+        for pat in INVOICE_NO_PATTERNS:
+            m = re.search(pat, combined_q, re.IGNORECASE)
+            if m:
+                query_invoice_no = m.group(0)
+                break
+
+        INVOICE_TOOLS_LIST = {"get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"}
+
         for tn in selected_tools:
             if tn not in called_names:
                 td = set(TOOL_DOMAINS.get(tn, []))
@@ -1734,15 +1751,19 @@ async def chat_model_node(state: MainState):
                     if not any(kw in combined_q for kw in all_kw):
                         print(f"[FORCE-INJECT] Skipping {tn} (no domain match and no keyword overlap with query)")
                         continue
+                # Auto-fill invoice_no for invoice tools
+                inject_args = {}
+                if tn in INVOICE_TOOLS_LIST and query_invoice_no:
+                    inject_args = {"invoice_no": query_invoice_no}
                 all_raw_calls.append({
                     "name": tn,
-                    "args": {},
+                    "args": inject_args,
                     "id": f"call_force_{tn}_{uuid.uuid4().hex[:8]}",
                     "type": "tool_call",
                 })
                 called_names.add(tn)
                 covered_domains |= td
-                print(f"[FORCE-INJECT] Adding missing tool: {tn}")
+                print(f"[FORCE-INJECT] Adding missing tool: {tn} (args: {inject_args})")
 
         raw_tool_calls = all_raw_calls
         tool_calls = []
@@ -1822,6 +1843,13 @@ async def chat_model_node(state: MainState):
                     new_args["search"] = cust_num.group(1)
 
             INVOICE_TOOLS = {"get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"}
+            if name in INVOICE_TOOLS and not new_args.get("invoice_no"):
+                for pat in INVOICE_NO_PATTERNS:
+                    m = re.search(pat, combined_q, re.IGNORECASE)
+                    if m:
+                        new_args["invoice_no"] = m.group(0)
+                        print(f"[REPAIR] {name}: filled invoice_no='{m.group(0)}' from query")
+                        break
             if name in INVOICE_TOOLS and new_args.get("invoice_no"):
                 new_args["limit"] = 5000
                 new_args["sort_by"] = "invoiceDate"
@@ -2280,6 +2308,125 @@ def filter_gst_records_by_query(records: list[dict], query: str) -> list[dict]:
         record for record in records
         if isinstance(record, dict) and record.get("category") in requested_set
     ]
+
+# ── Identifier-aware output filter (config-driven, no hardcoded data values) ──
+
+IDENTIFIER_CONFIG = get_cfg("identifier_patterns", default={})
+CITY_ALIASES = get_cfg("city_aliases", default={})
+CITY_WORDS_SET = {w.lower() for w in CITY_WORDS}
+NAME_STOPWORDS = {w.lower() for w in get_cfg("name_extraction", "stopwords", default=[])}
+
+
+def extract_query_identifiers(query: str, last_tool_call: dict | None = None) -> dict:
+    """Extract known identifiers from the query string and tool call args.
+
+    Pure function — no side effects. Reads identifier patterns from config.yaml.
+    Only returns identifiers for high-confidence matches (regex patterns,
+    known cities, search/term params from tool calls).
+    """
+    identifiers: dict = {}
+    q_lower = query.lower() if query else ""
+
+    # 1. Regex-based patterns from config.yaml
+    for id_key, patterns in IDENTIFIER_CONFIG.items():
+        for pat in patterns:
+            m = re.search(pat, q_lower, re.IGNORECASE)
+            if m:
+                raw = m.group(1) if m.lastindex else m.group(0)
+                if id_key in ("party_id", "vendor_id") and raw.isdigit():
+                    identifiers[id_key] = int(raw)
+                else:
+                    identifiers[id_key] = raw
+                break
+
+    # 2. City detection (from config.yaml's cities + city_aliases)
+    for city_name in CITY_WORDS_SET:
+        if city_name in q_lower:
+            identifiers["city"] = city_name.upper()
+            break
+    if "city" not in identifiers:
+        for alias, canonical in CITY_ALIASES.items():
+            if alias in q_lower:
+                identifiers["city"] = canonical
+                break
+
+    # 3. Entity name from tool call args (most reliable: search/term fields)
+    if last_tool_call:
+        for tool_name, args in last_tool_call.items():
+            raw = (args.get("search") or args.get("term") or "").strip()
+            if len(raw) > 2:
+                identifiers["name"] = raw
+                break
+
+    return identifiers
+
+
+def apply_identifier_filter(data: dict, identifiers: dict) -> dict:
+    """Filter tool outputs to only keep records matching detected identifiers.
+
+    Config-driven: each tool declares its record_filters in TOOL_INTENT_REGISTRY.
+    Summary rows (recordType=summary) are always preserved.
+    If filter yields zero matches, original records are kept (defensive fallback).
+    Pure function — no side effects.
+    """
+    if not identifiers:
+        return data
+
+    result = {}
+    for tool_name, records in data.items():
+        if not isinstance(records, list):
+            result[tool_name] = records
+            continue
+
+        tool_filters = TOOL_INTENT_REGISTRY.get(tool_name, {}).get("record_filters", [])
+        if not tool_filters:
+            result[tool_name] = records
+            continue
+
+        kept = []
+        for record in records:
+            if not isinstance(record, dict):
+                kept.append(record)
+                continue
+            # Always preserve summary rows
+            if record.get("recordType") == "summary":
+                kept.append(record)
+                continue
+            matched = False
+            for f in tool_filters:
+                id_val = identifiers.get(f["id_key"])
+                if id_val is None:
+                    continue
+                rec_val = record.get(f["match_field"])
+                if rec_val is None:
+                    continue
+                mt = f.get("match_type", "exact")
+                if mt == "exact":
+                    if str(id_val) == str(rec_val):
+                        matched = True
+                        break
+                elif mt == "icontains":
+                    if str(id_val).lower() in str(rec_val).lower():
+                        matched = True
+                        break
+                elif mt == "exact_case_insensitive":
+                    if str(id_val).lower() == str(rec_val).lower():
+                        matched = True
+                        break
+            if matched:
+                kept.append(record)
+
+        if kept:
+            result[tool_name] = kept
+            if len(kept) < len(records):
+                print(f"[IDENT-FILTER] {tool_name}: kept {len(kept)}/{len(records)} records matching {identifiers}")
+        else:
+            result[tool_name] = records
+            print(f"[IDENT-FILTER] {tool_name}: no match for {identifiers}, kept all {len(records)} records (fallback)")
+
+    return result
+
+
 # ============================================
 # DETERMINISTIC FINAL NODE
 # ============================================
@@ -2425,6 +2572,14 @@ async def deterministic_final_node(state: MainState):
                         entry["id"] = id_
                     entities.append(entry)
     ctx["entities"] = entities
+
+    # -------------------------------------------------
+    # Identifier-aware output filtering (config-driven, no hardcoded data values)
+    combined_query = f"{user_query or ''} {canonical_query or ''}"
+    identifiers = extract_query_identifiers(combined_query, last_tool_call)
+    if identifiers:
+        data = apply_identifier_filter(data, identifiers)
+
     # -------------------------------------------------
     # NEW: final deterministic cleanup
     # Example: dedupe customer/vendor names for list queries
@@ -2433,6 +2588,34 @@ async def deterministic_final_node(state: MainState):
     user_query,
     canonical_query,
 )
+
+    # -------------------------------------------------
+    # Truncate records to max_records to avoid overwhelming the LLM
+    MAX_RECORDS = get_cfg("thresholds", "max_records", default=10)
+    truncation_info = {}
+    for tool_name, records in data.items():
+        if isinstance(records, list) and len(records) > MAX_RECORDS:
+            truncation_info[tool_name] = {
+                "total": len(records),
+                "shown": MAX_RECORDS,
+            }
+            data[tool_name] = records[:MAX_RECORDS]
+
+    # Set focus_entity for pronoun resolution when exactly one non-summary record exists
+    if not ctx.get("focus_entity"):
+        total_records = sum(
+            len(v) for v in data.values()
+            if isinstance(v, list)
+        )
+        if total_records == 1:
+            for tool_name, records in data.items():
+                if isinstance(records, list) and len(records) == 1:
+                    rec = records[0]
+                    if isinstance(rec, dict) and rec.get("recordType") != "summary":
+                        name = rec.get("ledgerName") or rec.get("customerName") or rec.get("name") or ""
+                        if name:
+                            ctx["focus_entity"] = {"name": name}
+                            break
 
     unsupported_parts = state.get("unsupported_parts", [])
 
@@ -2478,6 +2661,7 @@ async def deterministic_final_node(state: MainState):
         "data": data,
         "summary": make_summary(data, errors, unsupported_parts, total_rows),
         "errors": errors,
+        "truncation_info": truncation_info,
     }
     # Resolve invoice match conflicts
     if invoice_matches:
@@ -2715,57 +2899,70 @@ async def response_generation_node(state: MainState):
           "1-3 sentences max.\n"
           "   WRONG: 'Additional Insights: The invoices are from Oct-Dec 2024. Next Steps: Review high amounts.'\n"
           "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai, ledger CGLAM LIFESTYLE hai.'\n"
-          "7. ONLY when a JSON record contains the literal key '__note' (showing 'X of Y records not shown'), "
-          "tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
-         "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
+           "7. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
 "Say so plainly: 'data nahi mila' or 'kuch nahi mila' in the user's language. "
 "Do NOT repeat back any entity name, company name, ID, or invoice number that the user mentioned — "
 "the tool found nothing, so there is nothing to confirm. Do NOT say records are hidden.\n"
-          "9. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
-          "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
-          "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
-          "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
-          "10. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
-          "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
-          "You have the full tool list; use every tool that matches a query part.\n"
-            "11. When one tool found the exact record the user asked for (e.g. specific invoiceNo), "
-            "answer ONLY from that tool's data. Ignore all other tool outputs completely. "
-            "Do NOT describe, summarize, or mention any other tool's results.\n"
-            "   WRONG: 'Purchase invoices have 684 records but Sales has AI/0324/0010 with netAmount 29315.7'\n"
-            "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai' (purchase data not mentioned at all)\n"
-            "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
-            "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
-            "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
-            "12. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
-            "use the search-ledger tool. Set `groupType` based on the noun: "
-            "expense for office expenses/salary/rent, party for customers/vendors, "
-            "asset for fixed assets. Infer the noun from the query.\n"
-             "13. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
-             "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
-             "count, or split, ALWAYS use `get_gst_summary`. It returns ALL categories together — "
-             "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
-             "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
-             "not the GST category breakdown.\n"
-           "/no_think\n"
+           "8. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
+           "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
+           "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
+           "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
+           "9. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
+           "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
+           "You have the full tool list; use every tool that matches a query part.\n"
+             "10. When one tool found the exact record the user asked for (e.g. specific invoiceNo), "
+             "answer ONLY from that tool's data. Ignore all other tool outputs completely. "
+             "Do NOT describe, summarize, or mention any other tool's results.\n"
+             "   WRONG: 'Purchase invoices have 684 records but Sales has AI/0324/0010 with netAmount 29315.7'\n"
+             "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai' (purchase data not mentioned at all)\n"
+             "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
+             "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
+             "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
+             "11. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
+             "use the search-ledger tool. Set `groupType` based on the noun: "
+             "expense for office expenses/salary/rent, party for customers/vendors, "
+             "asset for fixed assets. Infer the noun from the query.\n"
+              "12. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
+              "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
+              "count, or split, ALWAYS use `get_gst_summary`. It returns ALL categories together — "
+              "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
+              "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
+              "not the GST category breakdown.\n"
+              "13. LIST TRUNCATION: If the user's query is a broad list (not a specific lookup) "
+              "and truncation_info is present showing fewer records than total, tell the user "
+              "'Showing first X of Y records' and suggest adding a filter like date range, "
+              "party name, city, or status to narrow results. "
+              "DO NOT attempt analysis, recommendations, or summaries based on partial data.\n"
+              "14. FIELD DISPLAY RULES:\n"
+              "    - For list queries (default): show max 5 most important fields per record. "
+              "Pick the 5 fields most relevant to the user's question (e.g. id, name, "
+              "invoiceNo, netAmount, outstanding).\n"
+              "    - For records with 5 or fewer fields: show all fields.\n"
+              "    - When the user asks for 'all details' / 'sabhi detail' / 'full info' / "
+              "'sara detail' (already covered by rule 10): show EVERY field — this overrides "
+              "the 5-field limit completely.\n"
+            "/no_think\n"
     )
 
-    # Truncate large tool results to avoid overwhelming the LLM's context window
-    MAX_SAMPLE_RECORDS = 50
+    # Safety truncation — primary truncation is in deterministic_final_node
+    SAFETY_MAX_RECORDS = 15
     final_response_prompt = dict(final_response)
+    final_response_prompt.pop("truncation_info", None)  # added to human_prompt below instead
     data = final_response_prompt.get("data", {})
     if isinstance(data, dict):
-        truncated_data = {}
+        truncated = {}
         for tool_name, records in data.items():
-            if isinstance(records, list) and len(records) > MAX_SAMPLE_RECORDS:
-                truncated_data[tool_name] = records[:MAX_SAMPLE_RECORDS]
-                if not _is_specific_lookup(original_query):
-                    extra = len(records) - MAX_SAMPLE_RECORDS
-                    truncated_data[tool_name].append({
-                        "__note": f"Showing {MAX_SAMPLE_RECORDS} of {len(records)} records. {extra} more records not shown."
-                    })
+            if isinstance(records, list) and len(records) > SAFETY_MAX_RECORDS:
+                truncated[tool_name] = records[:SAFETY_MAX_RECORDS]
             else:
-                truncated_data[tool_name] = records
-        final_response_prompt["data"] = truncated_data
+                truncated[tool_name] = records
+        final_response_prompt["data"] = truncated
+
+    # Detect "all details" request
+    detail_mode = bool(re.search(
+        r'\b(all details?|sabhi detail|saari detail|full info|complete info|sara detail|poora detail|saare detail)\b',
+        original_query, re.IGNORECASE
+    ))
 
     invoice_match = final_response_prompt.pop("_invoice_match", None)
     if invoice_match and isinstance(invoice_match, dict):
@@ -2776,10 +2973,21 @@ async def response_generation_node(state: MainState):
             final_response_prompt["summary"] = make_summary(filtered_data, [])
         final_response_prompt["_invoice_match"] = invoice_match
 
+    truncation_info = final_response.get("truncation_info", {}) or {}
+    truncation_note = ""
+    if truncation_info and not _is_specific_lookup(original_query):
+        total = sum(v.get("total", 0) for v in truncation_info.values())
+        shown = sum(v.get("shown", 0) for v in truncation_info.values())
+        truncation_note = f"\nTRUNCATION: Showing {shown} of {total} total records. Suggest a filter.\n"
+
+    detail_note = "\nDETAIL MODE: Show EVERY field of each record.\n" if detail_mode else ""
+
     human_prompt = (
         f"USER QUERY:\n{original_query}\n\n"
         f"TOOL RESULTS (JSON):\n{json.dumps(final_response_prompt, indent=2, ensure_ascii=False)}\n\n"
         f"Summary : {final_response_prompt.get('summary','')}\n\n"
+        f"{truncation_note}"
+        f"{detail_note}"
     )
 
     try:

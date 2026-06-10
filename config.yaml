@@ -296,6 +296,7 @@ segment_next_keywords:
 thresholds:
   embedding_recall_min: 0.4
   reranker_top_k: 6
+  max_records: 10
 
 # used by wants_unique_party_names()
 party_words:
@@ -404,3 +405,44 @@ pretty_field_names:
   totalPayables: Total Payables
   receivablesCount: Receivable Invoices
   payablesCount: Payable Invoices
+
+# ── Identifier extraction patterns ──
+# Used by extract_query_identifiers() in nodes.py to detect specific lookups.
+# Patterns with capture groups return the captured value; others return full match.
+# Add new invoice/code formats here without touching Python.
+identifier_patterns:
+  invoice_no:
+    - '\bPR[-/]?\d+\b'
+    - '\bA/\d{4}/C\d{4}\b'
+    - '\bAI/\d{4}/\d{4}\b'
+    - '\bAI/\d{2}-\d{2}/\d{3,4}\b'
+    - '\bSI[-/]?\d+\b'
+    - '\bOUT[-/]?\d+\b'
+  party_id:
+    - '\bcustomer\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
+    - '\bparty\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
+    - '\bclient\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
+    - '\bledger\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
+  vendor_id:
+    - '\bvendor\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
+  hsn_code:
+    - '\bHSN\s*[:#-]?\s*(\d{8})\b'
+  sku:
+    - '\bSKU\s*[:#-]?\s*([A-Z0-9-]+)\b'
+  tds_section:
+    - '\b(194[A-Z])\b'
+    - '\b(206[A-Z])\b'
+
+# Stopwords used when extracting entity names from tool call args
+name_extraction:
+  stopwords: [the, a, an, of, for, to, in, 'on', ka, ki, ke, ko, se, hai, hain, batao, bata, dikhao, chahiye, chahie, wala, wali, wale, customer, party, vendor, product, invoice, account, id, number, name, all, show, give, list, find, search, tell, get, want, need, uska, uski, uske, kya, aur, any, please, like, about, with, this, that, these, those]
+  min_words: 2
+  max_words: 6
+
+# City/state alias normalization (query alias -> canonical city name)
+city_aliases:
+  bengaluru: BANGALORE
+  bombay: MUMBAI
+  madras: CHENNAI
+  calcutta: KOLKATA
+  new delhi: DELHI
