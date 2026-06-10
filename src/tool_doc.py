@@ -306,7 +306,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "sales",
         "multi_call_ok": True,
         "description": "Fetch outstanding/unpaid sales invoices with aging details, invoice amounts, due dates, and summary totals.",
-        "prompt_tips": "Lists invoices by DATE RANGE. ledgerName field contains customer names (e.g. 'B2C_MAHARASHTRA', 'B2C_ANDHRA PRADESH').",
+        "prompt_tips": "Lists invoices by DATE RANGE. ledgerName field contains customer names (e.g. 'B2C_MAHARASHTRA', 'B2C_ANDHRA PRADESH'). When invoice_no is given, scan results for matching invoiceNo — the invoice may be anywhere in the list.",
         "aliases": [
             "outstanding sales", "outstanding invoices", "pending invoices",
             "unpaid invoices", "sales due", "invoice outstanding",
@@ -327,7 +327,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "purchase",
         "multi_call_ok": True,
         "description": "Fetch outstanding/unpaid purchase invoices with aging details, bill amounts, due dates, and summary totals.",
-        "prompt_tips": "Lists bills by DATE RANGE.",
+        "prompt_tips": "Lists bills by DATE RANGE. When invoice_no is given, scan results for matching invoiceNo — the bill may be anywhere in the list.",
         "aliases": [
             "outstanding purchases", "outstanding purchase invoices", "pending purchase invoices",
             "unpaid purchase invoices", "bills payable", "creditors",
@@ -346,7 +346,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "sales",
         "multi_call_ok": True,
         "description": "Fetch overdue invoices (both sales receivables and purchase payables) past their due date, with aging details and summary totals.",
-        "prompt_tips": "invoice_type=SALES|PURCHASE|BOTH, as_of_date YYYY-MM-DD.",
+        "prompt_tips": "invoice_type=SALES|PURCHASE|BOTH, as_of_date YYYY-MM-DD. When invoice_no is given, scan results for matching invoiceNo — the invoice may be anywhere in the list.",
         "aliases": [
             "overdue invoices", "overdue bills", "overdue payments",
             "past due", "past due invoices", "delayed payments",

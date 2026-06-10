@@ -63,7 +63,7 @@ TOOL_DOMAINS = {
     "get_search_vendors": ["vendor"],
     "get_outstanding_sales_invoices": ["sales"],
     "get_outstanding_purchase_invoices": ["purchase"],
-    "get_overdue_invoices": ["sales"],
+    "get_overdue_invoices": ["sales", "purchase"],
 }
 
 
@@ -143,7 +143,7 @@ def _is_specific_lookup(query: str) -> bool:
     q = (query or "").lower()
     if re.search(r'\b(pr|lr|si|out)[\s-]?\d+\b', q, re.IGNORECASE):
         return True
-    if re.search(r'\ba/\d{4}/c\d{4}\b', q, re.IGNORECASE):
+    if re.search(r'\b[a-z]+/\d{4}/\d{3,}\b', q, re.IGNORECASE):
         return True
     if any(w in q for w in ["for", "of ", "detail of", "detail for", "specific", "particular"]):
         if re.search(r'\b(pr|invoice|bill|customer|party|vendor|product|hsn)\b', q):
@@ -887,6 +887,12 @@ async def semantic_search(state: MainState) -> MainState:
         # Exclude get_customer_ledger when query contains an invoice pattern
         if combined and any(re.search(p, combined, re.IGNORECASE) for pats in INVOICE_PATTERNS.values() for p in pats):
             selected_tools = [t for t in selected_tools if t != 'get_customer_ledger']
+
+        # If document_type is specific, remove tools with exclusively wrong-domain
+        if document_type in {"purchase_invoice", "purchase"}:
+            selected_tools = [t for t in selected_tools if set(TOOL_DOMAINS.get(t, [])) != {"sales"}]
+        elif document_type in {"sales_invoice", "sales"}:
+            selected_tools = [t for t in selected_tools if set(TOOL_DOMAINS.get(t, [])) != {"purchase"}]
 
         if selected_tools:
             print(f"Final selected tools: {selected_tools}")
@@ -1691,6 +1697,10 @@ async def chat_model_node(state: MainState):
         for qp in query_parts:
             hd, _ = classify_domains(qp)
             all_part_domains |= hd
+        # Also respect the translator's document_type override as a domain signal
+        doc_override = state.get("document_type", "").replace("_invoice", "").replace("_", "")
+        if doc_override:
+            all_part_domains.add(doc_override)
         # Track domains already covered by tools the LLM called
         covered_domains = set()
         for tn in called_names:
@@ -1703,8 +1713,8 @@ async def chat_model_node(state: MainState):
                 if td and all_part_domains and not td & all_part_domains:
                     print(f"[FORCE-INJECT] Skipping {tn} (domain {td} no overlap with {all_part_domains})")
                     continue
-                # Skip if tool's domains are already covered by an already-called tool
-                if td and covered_domains and td & covered_domains:
+                # Skip only if ALL of tool's domains are already covered by an already-called tool
+                if td and covered_domains and td.issubset(covered_domains):
                     print(f"[FORCE-INJECT] Skipping {tn} (domain {td} already covered by {covered_domains})")
                     continue
                 # Skip when no hard domains detected AND the query has no keyword match for this tool
@@ -1801,63 +1811,11 @@ async def chat_model_node(state: MainState):
                 if cust_num and not new_args.get("search"):
                     new_args["search"] = cust_num.group(1)
 
-            INVOICE_TOOLS = {"get_overdue_invoices", "get_outstanding_sales_invoices", "get_outstanding_purchase_invoices"}
-            if name in INVOICE_TOOLS:
-                inv_patterns = [
-                    r'[A-Z]{2,5}/\d{2,4}[-/]\d{2,4}/\d{2,5}',
-                    r'\b[A-Z]{2,5}-\d{2,5}\b',
-                    r'\d{3,5}[-/]\d{7,10}[-/]\d{7,10}',
-                ]
-                all_matches = []
-                for pat in inv_patterns:
-                    all_matches.extend(re.findall(pat, combined_q, re.IGNORECASE))
-                all_matches = list(dict.fromkeys(m.strip() for m in all_matches if m.strip()))
-                if all_matches:
-                    inv_filters = new_args.get("filters") or {}
-                    if not isinstance(inv_filters, dict):
-                        inv_filters = {}
-                    if "invoiceNo" not in inv_filters:
-                        if len(all_matches) == 1:
-                            inv_filters["invoiceNo"] = all_matches[0]
-                        else:
-                            inv_filters["invoiceNo"] = all_matches
-                    new_args["filters"] = inv_filters
-
-            if name in INVOICE_TOOLS:
-                raw_queries = [q for q in [state.get("canonical_query", ""), state.get("original_query", ""), user_query] if q]
-                name_candidates = set()
-                for raw_q in raw_queries:
-                    for m in re.finditer(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+', raw_q):
-                        candidate = m.group(0)
-                        if not re.search(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|From|To|Show|List|Get|Fetch|Find|Search|Total|All|Sales|Purchase|Invoice|Overdue|Current|Aging|Balance|Summary|Amount|Type|Date|Name|Number|Code|Value)\b', candidate):
-                            name_candidates.add(candidate)
-                    for m in re.finditer(r'[A-Z][a-z]+\s*&\s*[A-Z][a-z]+', raw_q):
-                        name_candidates.add(m.group(0))
-                if name_candidates:
-                    best_name = max(name_candidates, key=len)
-                    inv_filters = new_args.get("filters") or {}
-                    if not isinstance(inv_filters, dict):
-                        inv_filters = {}
-                    inv_filters.setdefault("ledgerName", {"contains": best_name})
-                    new_args["filters"] = inv_filters
-                    print(f"[AUTO-INJECT] {name}: injected ledgerName contains '{best_name}'")
-
-            if name == "get_tds_outstanding":
-                section_match = re.search(r'\b(194[A-J])\b', combined_q)
-                if section_match:
-                    existing = new_args.get("filters") or {}
-                    if not isinstance(existing, dict):
-                        existing = {}
-                    existing.setdefault("section", section_match.group(1))
-                    new_args["filters"] = existing
-
-            if name == "get_tcs_outstanding":
-                if re.search(r'\b206C\b', combined_q):
-                    existing = new_args.get("filters") or {}
-                    if not isinstance(existing, dict):
-                        existing = {}
-                    existing.setdefault("section", "206C")
-                    new_args["filters"] = existing
+            INVOICE_TOOLS = {"get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"}
+            if name in INVOICE_TOOLS and new_args.get("invoice_no"):
+                new_args["limit"] = 5000
+                new_args["sort_by"] = "invoiceDate"
+                new_args["sort_order"] = "desc"
 
             param_aliases = repair.get("param_aliases", {})
             for llm_arg, real_param in param_aliases.items():
@@ -1877,6 +1835,25 @@ async def chat_model_node(state: MainState):
 
             return {"name": name, "args": new_args}
 
+        def _strip_unknown_params(tool_name: str, tool_args: dict) -> dict:
+            t = tools_dict[tool_name]
+            schema = t.args_schema
+            valid = set(schema.model_fields.keys()) if schema and hasattr(schema, 'model_fields') else set()
+            cleaned = {}
+            for k, v in tool_args.items():
+                if k in valid:
+                    if v is None and schema and k in schema.model_fields:
+                        field = schema.model_fields[k]
+                        if not field.is_required():
+                            cleaned[k] = field.default
+                        else:
+                            cleaned[k] = v
+                    else:
+                        cleaned[k] = v
+                else:
+                    print(f"[STRIP] {tool_name}: removing unknown param '{k}'")
+            return cleaned
+
         def _repair_tool_call(name: str, args: dict) -> dict | None:
             name = TOOL_NAME_ALIASES.get(name, name)
             if name not in tools_dict:
@@ -1891,7 +1868,10 @@ async def chat_model_node(state: MainState):
                 if alias in args and canonical not in args:
                     args[canonical] = args.pop(alias)
 
-            return _apply_repair(name, args, original_query)
+            result = _apply_repair(name, args, original_query)
+            if result:
+                result["args"] = _strip_unknown_params(name, result["args"])
+            return result
 
         # Process bind_tools output — raw_tool_calls from bind_tools is already structured
         for call in raw_tool_calls:
@@ -2303,11 +2283,14 @@ async def deterministic_final_node(state: MainState):
     user_query = state.get("user_query", "")
     canonical_query = state.get("canonical_query", "")
     messages = state.get("messages", [])
+    document_type = (state.get("document_type", "") or "").lower().strip()
 
     data = {}
     tools_used = []
     errors = []
     total_rows = 0
+    invoice_tool_match = None
+    invoice_matches = {}
     current_tool_call_ids = set()
     # Accumulate tool calls across rounds — start from existing state
     last_tool_call = dict(state.get("last_tool_call", {}))
@@ -2389,6 +2372,12 @@ async def deterministic_final_node(state: MainState):
 
         if isinstance(parsed, dict):
             total_rows += parsed.get("total_rows", 0) or 0
+        if isinstance(parsed, dict) and parsed.get("_invoice_found") and parsed.get("matched_record"):
+            invoice_matches[tool_name] = {
+                "tool_name": tool_name,
+                "matched_record": parsed["matched_record"],
+                "_invoice_target": parsed.get("_invoice_target", ""),
+            }
         if tool_name == "get_gst_summary":
             records = filter_gst_records_by_query(
                 records,
@@ -2480,6 +2469,22 @@ async def deterministic_final_node(state: MainState):
         "summary": make_summary(data, errors, unsupported_parts, total_rows),
         "errors": errors,
     }
+    # Resolve invoice match conflicts: prefer tool whose domain aligns with document_type
+    if invoice_matches:
+        doc_domain = document_type.replace("_invoice", "").replace("_", "")
+        preferred = None
+        # First pass: look for a match whose TOOL_DOMAINS contains the doc_domain
+        for tn, match in invoice_matches.items():
+            td = set(TOOL_DOMAINS.get(tn, []))
+            if doc_domain in td:
+                preferred = match
+                break
+        # Second pass: if no domain-aligned match, pick the one with the latest match
+        if preferred is None:
+            for tn, match in invoice_matches.items():
+                preferred = match  # last one wins (insertion order preserved)
+        final_response["_invoice_match"] = preferred
+        invoice_tool_match = preferred
 
     if total_rows > 0:
         final_response["total_rows"] = total_rows
@@ -2672,39 +2677,49 @@ async def response_generation_node(state: MainState):
         "   The TOOL RESULTS JSON below is the ONLY source of truth. Do NOT add IDs, names, or values not present in it.\n"
         "   WRONG: \"productId F12 ka quantity 5 se jada hai\" (when tool results have no productId or F12)\n"
         "   CORRECT: \"is baare mein data nahi mila\" or \"closingQty wala column nahi tha\"\n"
-        "4. Do NOT use headers like '--- Customers ---' or '--- Results ---' or any section labels.\n"
-        "5. Do NOT use bullet points or numbered lists unless the user explicitly asked for a list.\n"
-         "6. Keep the reply to 1-4 short sentences (up to 8 if the user asked for multiple separate items).\n"
-         "7. ONLY when a JSON record contains the literal key '__note' (showing 'X of Y records not shown'), "
-         "tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
-        "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
+         "4. NO headings of any kind. NO 'Summary:', 'Details:', 'Sample Record:', "
+         "'Additional Information:', 'Key Points:', 'Sample Invoice Details:', 'Outstanding X Summary:' — "
+         "zero headings. Just plain conversational sentences.\n"
+         "   WRONG: 'Sales Invoices Summary: AI/0324/0010 ka netAmount 29315.7 hai'\n"
+         "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai'\n"
+         "5. Do NOT use bullet points or numbered lists unless the user explicitly asked for a list.\n"
+          "6. Answer ONLY what was asked. No analysis, advice, recommendations, "
+          "'Next Steps:', 'Additional Insights:', or 'Key Points'. "
+          "If the user asked for netAmount, give netAmount and nothing else. "
+          "1-3 sentences max.\n"
+          "   WRONG: 'Additional Insights: The invoices are from Oct-Dec 2024. Next Steps: Review high amounts.'\n"
+          "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai, ledger CGLAM LIFESTYLE hai.'\n"
+          "7. ONLY when a JSON record contains the literal key '__note' (showing 'X of Y records not shown'), "
+          "tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
+         "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
 "Say so plainly: 'data nahi mila' or 'kuch nahi mila' in the user's language. "
 "Do NOT repeat back any entity name, company name, ID, or invoice number that the user mentioned — "
 "the tool found nothing, so there is nothing to confirm. Do NOT say records are hidden.\n"
-         "9. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
-         "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
-         "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
-         "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
-         "10. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
-         "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
-         "You have the full tool list; use every tool that matches a query part.\n"
-           "11. Your reply text MUST mention the results of EVERY tool call. "
-           "Do not skip any tool's output. Include the key numbers/facts from each tool in your sentences.\n"
-           "    WRONG: 'NYKAA customers ka koi b2c detail nahi mila' (B2C data WAS returned: 250 vouchers, 30232.35 taxable)\n"
-           "    CORRECT: 'April 2024 mein B2C Small ke 250 vouchers hain jinka taxable amount 30232.35 hai'\n"
-           "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
-           "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
-           "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
-           "12. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
-           "use the search-ledger tool. Set `groupType` based on the noun: "
-           "expense for office expenses/salary/rent, party for customers/vendors, "
-           "asset for fixed assets. Infer the noun from the query.\n"
-           "13. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
-           "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
-           "count, or split, ALWAYS use `get_gst_summary` with `filters.category` set to the "
-           "appropriate value (b2b, b2cSmall, b2cLarge, exports, nilRated). "
-           "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
-           "not the GST category breakdown.\n"
+          "9. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
+          "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
+          "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
+          "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
+          "10. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
+          "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
+          "You have the full tool list; use every tool that matches a query part.\n"
+            "11. When one tool found the exact record the user asked for (e.g. specific invoiceNo), "
+            "answer ONLY from that tool's data. Ignore all other tool outputs completely. "
+            "Do NOT describe, summarize, or mention any other tool's results.\n"
+            "   WRONG: 'Purchase invoices have 684 records but Sales has AI/0324/0010 with netAmount 29315.7'\n"
+            "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai' (purchase data not mentioned at all)\n"
+            "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
+            "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
+            "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
+            "12. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
+            "use the search-ledger tool. Set `groupType` based on the noun: "
+            "expense for office expenses/salary/rent, party for customers/vendors, "
+            "asset for fixed assets. Infer the noun from the query.\n"
+             "13. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
+             "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
+             "count, or split, ALWAYS use `get_gst_summary`. It returns ALL categories together — "
+             "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
+             "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
+             "not the GST category breakdown.\n"
            "/no_think\n"
     )
 
@@ -2726,10 +2741,19 @@ async def response_generation_node(state: MainState):
                 truncated_data[tool_name] = records
         final_response_prompt["data"] = truncated_data
 
+    invoice_match = final_response_prompt.pop("_invoice_match", None)
+    if invoice_match and isinstance(invoice_match, dict):
+        matched_tool = invoice_match.get("tool_name", "")
+        if matched_tool and matched_tool in final_response_prompt.get("data", {}):
+            filtered_data = {matched_tool: final_response_prompt["data"][matched_tool]}
+            final_response_prompt["data"] = filtered_data
+            final_response_prompt["summary"] = make_summary(filtered_data, [])
+        final_response_prompt["_invoice_match"] = invoice_match
+
     human_prompt = (
         f"USER QUERY:\n{original_query}\n\n"
         f"TOOL RESULTS (JSON):\n{json.dumps(final_response_prompt, indent=2, ensure_ascii=False)}\n\n"
-        f"Summary : {final_response.get('summary','')}\n\n"
+        f"Summary : {final_response_prompt.get('summary','')}\n\n"
     )
 
     try:

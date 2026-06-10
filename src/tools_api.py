@@ -101,6 +101,54 @@ def append_report_summary_row(result: dict, report_type: str) -> dict:
     return result
 
 
+MAX_INVOICE_PAGES = 5
+
+
+async def _fetch_invoice_with_pagination(endpoint: str, body: dict, report_type: str, invoice_no: str) -> str:
+    body["sortBy"] = "invoiceDate"
+    body["sortOrder"] = "desc"
+    body["limit"] = 5000
+
+    page = 1
+    all_records = []
+    found = False
+    last_result = None
+
+    matched_record = None
+
+    while page <= MAX_INVOICE_PAGES:
+        body["page"] = page
+        last_result = await cached_api_post(endpoint, body=body)
+        records = last_result.get("data", [])
+        if not isinstance(records, list):
+            records = [records] if records else []
+        all_records.extend(records)
+
+        for r in records:
+            if isinstance(r, dict) and r.get("invoiceNo") == invoice_no:
+                found = True
+                matched_record = dict(r)
+                break
+        if found:
+            break
+
+        if len(records) < 5000:
+            break
+        page += 1
+
+    if found and matched_record:
+        last_result["data"] = [matched_record]
+        last_result["matched_record"] = matched_record
+        last_result = append_report_summary_row(last_result, report_type)
+    else:
+        last_result["data"] = all_records
+        last_result = append_report_summary_row(last_result, report_type)
+
+    last_result["_invoice_target"] = invoice_no
+    last_result["_invoice_found"] = found
+    return json.dumps(last_result, ensure_ascii=False)
+
+
 def flatten_sales_summary_result(result: dict) -> dict:
     if not result.get("success"):
         return result
@@ -158,7 +206,7 @@ def flatten_sales_trend_result(result: dict) -> dict:
 @tool
 async def get_gst_summary(from_date: str, to_date: str):
     """Fetch GST summary report for a date range."""
-    body = {"companyId": COMPANY_ID, "from": from_date, "to": to_date}
+    body = {"companyId": COMPANY_ID, "from": from_date or "", "to": to_date or ""}
     result = await cached_api_post(GST_SUMMARY_ENDPOINT, body=body)
     result = flatten_gst_summary_result(result)
     print("[TOOL OUTPUT]", result)
@@ -399,12 +447,17 @@ async def get_stock_levels(from_date: Optional[str] = "", to_date: Optional[str]
 
 @tool
 async def get_outstanding_sales_invoices(from_date: str = "", to_date: str = "",
-                                          as_of_date: str = "", page: int = 1, limit: int = 50,
+                                          invoice_no: str = "", as_of_date: str = "",
+                                          page: int = 1, limit: int = 50,
                                           sort_by: str = "daysOverdue", sort_order: str = "desc"):
     """Fetch outstanding/unpaid sales invoices with aging details."""
     body = {"companyId": COMPANY_ID, "from": from_date or "", "to": to_date or "",
-            "asOfDate": as_of_date or "", "page": page, "limit": limit,
+            "invoiceNo": invoice_no or "", "asOfDate": as_of_date or "",
+            "page": page, "limit": limit,
             "sortBy": sort_by, "sortOrder": sort_order}
+    if invoice_no:
+        return await _fetch_invoice_with_pagination(
+            OUTSTANDING_SALES_INVOICES_ENDPOINT, body, "outstandingSalesInvoices", invoice_no)
     result = await cached_api_post(OUTSTANDING_SALES_INVOICES_ENDPOINT, body=body)
     result = append_report_summary_row(result, "outstandingSalesInvoices")
     print("[TOOL OUTPUT]", result)
@@ -413,12 +466,17 @@ async def get_outstanding_sales_invoices(from_date: str = "", to_date: str = "",
 
 @tool
 async def get_outstanding_purchase_invoices(from_date: str = "", to_date: str = "",
-                                             as_of_date: str = "", page: int = 1, limit: int = 50,
+                                             invoice_no: str = "", as_of_date: str = "",
+                                             page: int = 1, limit: int = 50,
                                              sort_by: str = "daysOverdue", sort_order: str = "desc"):
     """Fetch outstanding/unpaid purchase invoices with aging details."""
     body = {"companyId": COMPANY_ID, "from": from_date or "", "to": to_date or "",
-            "asOfDate": as_of_date or "", "page": page, "limit": limit,
+            "invoiceNo": invoice_no or "", "asOfDate": as_of_date or "",
+            "page": page, "limit": limit,
             "sortBy": sort_by, "sortOrder": sort_order}
+    if invoice_no:
+        return await _fetch_invoice_with_pagination(
+            OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body, "outstandingPurchaseInvoices", invoice_no)
     result = await cached_api_post(OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body=body)
     result = append_report_summary_row(result, "outstandingPurchaseInvoices")
     print("[TOOL OUTPUT]", result)
@@ -426,13 +484,17 @@ async def get_outstanding_purchase_invoices(from_date: str = "", to_date: str = 
 
 
 @tool
-async def get_overdue_invoices(invoice_type: str = "BOTH", as_of_date: str = "",
-                                page: int = 1, limit: int = 50,
+async def get_overdue_invoices(invoice_type: str = "BOTH", invoice_no: str = "",
+                                as_of_date: str = "", page: int = 1, limit: int = 50,
                                 sort_by: str = "daysOverdue", sort_order: str = "desc"):
     """Fetch overdue invoices (both sales and purchase) beyond their due date."""
     body = {"companyId": COMPANY_ID, "invoiceType": invoice_type or "BOTH",
-            "asOfDate": as_of_date or "", "page": page, "limit": limit,
+            "invoiceNo": invoice_no or "", "asOfDate": as_of_date or "",
+            "page": page, "limit": limit,
             "sortBy": sort_by, "sortOrder": sort_order}
+    if invoice_no:
+        return await _fetch_invoice_with_pagination(
+            OVERDUE_INVOICES_ENDPOINT, body, "overdueInvoices", invoice_no)
     result = await cached_api_post(OVERDUE_INVOICES_ENDPOINT, body=body)
     result = append_report_summary_row(result, "overdueInvoices")
     print("[TOOL OUTPUT]", result)
