@@ -28,8 +28,8 @@ normalizer_llm = ChatOpenAI(
 )
 llm = ChatOpenAI(
     model= os.getenv("LLM_MODEL") ,
-    base_url= os.getenv("BASE_URL"),
-    api_key= os.getenv("MODEL_API_KEY"),
+    base_url= os.getenv("LLM_BASE_URL"),
+    api_key= os.getenv("LLM_MODEL_API_KEY"),
     temperature=0.0,
     max_tokens=4096,
     timeout=120,

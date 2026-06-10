@@ -73,12 +73,21 @@ TOOL_DOMAINS = {
 }
 
 
-def classify_domains(query: str) -> tuple[set[str], set[str]]:
+def classify_domains(query: str, resolved_entities: list | None = None) -> tuple[set[str], set[str]]:
     query_lower = query.lower()
     hard = set()
+    entity_tokens = set()
+    for e in (resolved_entities or []):
+        n = (e.get("name") or "").lower()
+        for tok in re.findall(r"[a-z0-9]+", n):
+            entity_tokens.add(tok)
     for domain, keywords in DOMAIN_KEYWORDS.items():
-        if any(kw in query_lower for kw in keywords):
-            hard.add(domain)
+        for kw in keywords:
+            if kw in query_lower:
+                if domain in {"gst", "tax"} and kw.lower() in entity_tokens:
+                    continue
+                hard.add(domain)
+                break
     soft = set()
     for domain, patterns in INVOICE_PATTERNS.items():
         if any(re.search(p, query, re.IGNORECASE) for p in patterns):
@@ -123,13 +132,16 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
         return query, []
 
     # First priority: focus_entity from the most recent matched invoice/customer lookup
-    focus = (conv_ctx or {}).get("focus_entity")
-    if focus and focus.get("name"):
-        name = focus["name"]
-        resolved = query
-        for p in found:
-            resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
-        return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
+    # Skip focus_entity for plural pronouns (dono/sab) — use entities list instead
+    is_plural = any(p in DONO_PRONOUNS for p in found)
+    if not is_plural:
+        focus = (conv_ctx or {}).get("focus_entity")
+        if focus and focus.get("name"):
+            name = focus["name"]
+            resolved = query
+            for p in found:
+                resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
+            return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
 
     # Fallback: generic entities list (accumulated from all tool data)
     entities = (conv_ctx or {}).get("entities", [])
@@ -671,6 +683,21 @@ def is_multi_intent_query(original_query: str, canonical_query: str, query_parts
         return True
 
     return len(query_parts) > 1
+
+
+def _filter_for_list_intent(part: str, tools: list[str]) -> list[str]:
+    q = part.lower()
+    is_list_all = bool(re.search(
+        r'\b(sab|sabhi|sare|saare|sari|saari|all|every|poora|saara|har)\b', q))
+    if not is_list_all:
+        return tools
+    SINGLE_RECORD_TOOLS = {"get_customer_ledger"}
+    filtered = [t for t in tools if t not in SINGLE_RECORD_TOOLS]
+    if len(filtered) < len(tools):
+        print(f"[LIST-INTENT] {part}: removed single-record tools ({set(tools)-set(filtered)})")
+    return filtered
+
+
 # ============================================
 # SEMANTIC SEARCH NODE
 # ============================================
@@ -817,9 +844,10 @@ async def semantic_search(state: MainState) -> MainState:
                 }
 
         selected_tool_groups: list[list[str]] = []
+        resolved_entities = state.get("resolved_entities", [])
 
         for part in query_parts:
-            hard_domains, soft_domains = classify_domains(part)
+            hard_domains, soft_domains = classify_domains(part, resolved_entities)
             if hard_domains:
                 filtered_registry = _filter_registry_by_domain(hard_domains)
                 print(f"Part '{part}': hard domains {hard_domains}, using filtered registry ({len(filtered_registry)} tools)")
@@ -832,20 +860,24 @@ async def semantic_search(state: MainState) -> MainState:
 
             tools_for_part = score_tools_via_reranker(part, filtered_registry)
             if tools_for_part:
+                tools_for_part = _filter_for_list_intent(part, tools_for_part)
                 print(f"Reranker tools for part '{part}': {tools_for_part}")
-                selected_tool_groups.append(tools_for_part)
+                if tools_for_part:
+                    selected_tool_groups.append(tools_for_part)
                 continue
 
             kw_tools = _keyword_fallback(part, filtered_registry)
             if kw_tools:
+                kw_tools = _filter_for_list_intent(part, kw_tools)
                 print(f"Keyword fallback tools for part '{part}': {kw_tools}")
-                selected_tool_groups.append(kw_tools)
+                if kw_tools:
+                    selected_tool_groups.append(kw_tools)
             else:
                 print(f"No tools found for part '{part}' via reranker or keyword fallback")
 
         combined_hard_domains: set[str] = set()
         for qp in query_parts:
-            hd, _ = classify_domains(qp)
+            hd, _ = classify_domains(qp, resolved_entities)
             combined_hard_domains |= hd
 
         maybe_append = []
@@ -873,7 +905,14 @@ async def semantic_search(state: MainState) -> MainState:
 
         selected_tools = merge_unique_tools(selected_tool_groups)
         selected_tools = [t for t in selected_tools if t in tools_dict]
-        MAX_TOOLS_FOR_LLM = 5
+        intents_count = len(query_parts)
+        if intents_count == 1:
+            is_targeted = bool(re.search(
+                r'\b(konsa|kaunsa|konse|kaunse|which|who|find|search|show me|list|all|kitne|kitna)\b',
+                user_query.lower()))
+            MAX_TOOLS_FOR_LLM = 2 if is_targeted else 4
+        else:
+            MAX_TOOLS_FOR_LLM = 5
         if len(selected_tools) > MAX_TOOLS_FOR_LLM:
             print(f"Trimming selected_tools from {len(selected_tools)} to {MAX_TOOLS_FOR_LLM}")
             preserved_order = []
@@ -1220,31 +1259,37 @@ def ns_to_sec(value):
 
 def log_token_usage(response, label: str):
     meta = getattr(response, "response_metadata", {}) or {}
-    tu = meta.get("token_usage", {}) or {}
-    prompt_tokens = tu.get("prompt_tokens") if tu.get("prompt_tokens") is not None else meta.get("prompt_eval_count", 0)
-    output_tokens = tu.get("completion_tokens") if tu.get("completion_tokens") is not None else meta.get("eval_count", 0)
-    model = tu.get("model") or meta.get("model", "unknown")
+    um = getattr(response, "usage_metadata", None) or {}
+    prompt_tokens = um.get("input_tokens") or meta.get("prompt_eval_count", 0)
+    output_tokens = um.get("output_tokens") or meta.get("eval_count", 0)
+    model = meta.get("model") or meta.get("model_name", "unknown")
     model_provider = meta.get("model_provider", "")
     tag = f"[TOKENS] {label}"
     if model_provider:
         tag += f" | provider={model_provider}"
-    print(f"{tag} | model={model} | input={prompt_tokens} | output={output_tokens} | total={prompt_tokens + output_tokens}")
+    total = (prompt_tokens or 0) + (output_tokens or 0)
+    print(f"{tag} | model={model} | input={prompt_tokens or 0} | output={output_tokens or 0} | total={total}")
 
 
 def print_ollama_metadata(response):
     metadata = getattr(response, "response_metadata", {}) or {}
 
     print("\n========== OLLAMA METADATA ==========")
-    print("model:", metadata.get("model"))
-    print("done_reason:", metadata.get("done_reason"))
+    model = metadata.get("model") or metadata.get("model_name", "unknown")
+    print("model:", model)
+    print("done_reason:", metadata.get("done_reason", "N/A"))
 
-    print("total_duration:", ns_to_sec(metadata.get("total_duration")), "sec")
-    print("load_duration:", ns_to_sec(metadata.get("load_duration")), "sec")
-    print("prompt_eval_duration:", ns_to_sec(metadata.get("prompt_eval_duration")), "sec")
-    print("eval_duration:", ns_to_sec(metadata.get("eval_duration")), "sec")
+    total_dur = metadata.get("total_duration")
+    print("total_duration:", f"{ns_to_sec(total_dur):.2f}s" if total_dur else "N/A")
+    load_dur = metadata.get("load_duration")
+    print("load_duration:", f"{ns_to_sec(load_dur):.2f}s" if load_dur else "N/A")
+    prompt_eval_dur = metadata.get("prompt_eval_duration")
+    print("prompt_eval_duration:", f"{ns_to_sec(prompt_eval_dur):.2f}s" if prompt_eval_dur else "N/A")
+    eval_dur = metadata.get("eval_duration")
+    print("eval_duration:", f"{ns_to_sec(eval_dur):.2f}s" if eval_dur else "N/A")
 
-    print("prompt_eval_count:", metadata.get("prompt_eval_count"))
-    print("eval_count:", metadata.get("eval_count"))
+    print("prompt_eval_count:", metadata.get("prompt_eval_count", "N/A"))
+    print("eval_count:", metadata.get("eval_count", "N/A"))
     print("=====================================\n")
 
 
@@ -1722,21 +1767,11 @@ async def chat_model_node(state: MainState):
                         print(f"[FALLBACK] Last resort: reused last tool call: {tool_name}")
                         break
 
-        # Force-inject missing tools whose domains match the query parts
+        # Force-inject missing tools per query part (Bug #1b fix)
         query_parts = state.get("query_parts", [original_query])
-        all_part_domains = set()
-        for qp in query_parts:
-            hd, _ = classify_domains(qp)
-            all_part_domains |= hd
+        combined_q = (f"{original_query or ''} {state.get('canonical_query', '') or ''}").lower()
         # Also respect the translator's document_type override as a domain signal
         doc_override = state.get("document_type", "").replace("_invoice", "").replace("_", "")
-        if doc_override:
-            all_part_domains.add(doc_override)
-        # Track domains already covered by tools the LLM called
-        covered_domains = set()
-        for tn in called_names:
-            covered_domains |= set(TOOL_DOMAINS.get(tn, []))
-        combined_q = (f"{original_query or ''} {state.get('canonical_query', '') or ''}").lower()
 
         # Extract invoice number from query for auto-fill
         query_invoice_no = None
@@ -1748,19 +1783,23 @@ async def chat_model_node(state: MainState):
 
         INVOICE_TOOLS_LIST = {"get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"}
 
-        for tn in selected_tools:
-            if tn not in called_names:
-                td = set(TOOL_DOMAINS.get(tn, []))
-                # Skip if no domain overlap with query parts
-                if td and all_part_domains and not td & all_part_domains:
-                    print(f"[FORCE-INJECT] Skipping {tn} (domain {td} no overlap with {all_part_domains})")
+        for qp in query_parts:
+            qp_domains, _ = classify_domains(qp, state.get("resolved_entities"))
+            if doc_override:
+                qp_domains.add(doc_override)
+
+            for tn in selected_tools:
+                if tn in called_names:
                     continue
-                # Skip when no hard domains detected AND the query has no keyword match for this tool
-                if not all_part_domains:
+                td = set(TOOL_DOMAINS.get(tn, []))
+                # Skip if no domain overlap with this query part
+                if td and qp_domains and not td & qp_domains:
+                    continue
+                # Skip when this part has no hard domains AND the query has no keyword match for this tool
+                if not qp_domains:
                     meta = TOOL_INTENT_REGISTRY.get(tn, {})
                     all_kw = set(meta.get("keywords", [])) | set(meta.get("aliases", []))
-                    if not any(kw in combined_q for kw in all_kw):
-                        print(f"[FORCE-INJECT] Skipping {tn} (no domain match and no keyword overlap with query)")
+                    if not any(kw in qp.lower() for kw in all_kw):
                         continue
                 # Auto-fill invoice_no for invoice tools
                 inject_args = {}
@@ -1773,8 +1812,7 @@ async def chat_model_node(state: MainState):
                     "type": "tool_call",
                 })
                 called_names.add(tn)
-                covered_domains |= td
-                print(f"[FORCE-INJECT] Adding missing tool: {tn} (args: {inject_args})")
+                print(f"[FORCE-INJECT] Adding missing tool: {tn} for query part '{qp}' (args: {inject_args})")
 
         raw_tool_calls = all_raw_calls
         tool_calls = []
@@ -1812,17 +1850,21 @@ async def chat_model_node(state: MainState):
             if worker_has and not re.search(r"\d{4}-\d{2}-\d{2}|\b\d{4}\b", combined_q + " " + summary_text + recent_tool_dates):
                 worker_has = {}
 
+            # Merge: start with base_args if overwrite, else worker args.
+            # Worker-provided non-empty values always win.
             worker_extra = {}
-            if repair.get("overwrite") and args:
+            if args:
                 for k, v in args.items():
                     if k not in ("from_date", "to_date") and v is not None:
                         worker_extra[k] = v
-
-            new_args = (
-                dict(repair.get("base_args", {}))
-                if repair.get("overwrite")
-                else dict(args or {})
-            )
+            if repair.get("overwrite"):
+                new_args = dict(repair.get("base_args", {}))
+                if args:
+                    for k, v in args.items():
+                        if v not in (None, ""):
+                            new_args[k] = v
+            else:
+                new_args = dict(args or {})
 
             for dk, dv in worker_has.items():
                 new_args[dk] = dv
@@ -1842,6 +1884,13 @@ async def chat_model_node(state: MainState):
                 if f:
                     new_args["from_date"] = f
                     new_args["to_date"] = t
+
+            DATE_REQUIRED_TOOLS = {"get_gst_summary", "get_tds_outstanding", "get_tcs_outstanding"}
+            if name in DATE_REQUIRED_TOOLS:
+                has_dates = bool(new_args.get("from_date")) and bool(new_args.get("to_date"))
+                if not has_dates:
+                    print(f"[{name.upper()}] No date range found — signalling clarification needed")
+                    return {"name": name, "args": new_args, "_needs_date_range": True}
 
             low_stock_kws = repair.get("low_stock_only_keywords")
             if low_stock_kws and new_args.get("low_stock_only") is True:
@@ -1910,6 +1959,8 @@ async def chat_model_node(state: MainState):
                     print(f"[STRIP] {tool_name}: removing unknown param '{k}'")
             return cleaned
 
+        needs_date_clarification = []
+
         def _repair_tool_call(name: str, args: dict) -> dict | None:
             name = TOOL_NAME_ALIASES.get(name, name)
             if name not in tools_dict:
@@ -1926,6 +1977,9 @@ async def chat_model_node(state: MainState):
 
             result = _apply_repair(name, args, original_query)
             if result:
+                if result.get("_needs_date_range"):
+                    needs_date_clarification.append(result["name"])
+                    return None
                 result["args"] = _strip_unknown_params(name, result["args"])
             return result
 
@@ -1944,20 +1998,20 @@ async def chat_model_node(state: MainState):
                     "type": "tool_call",
                 })
 
-        # Dedup same-named tool calls: keep the one with more complete args
+        # Dedup same-named tool calls: keep the one with more complete args only if args are identical
         deduped = {}
         for call in tool_calls:
             n = call["name"]
             a = call["args"]
-            if n not in deduped:
-                deduped[n] = call
+            key = json.dumps({"name": n, "args": a}, sort_keys=True, default=str)
+            if key not in deduped:
+                deduped[key] = call
             else:
-                existing = deduped[n]["args"]
-                # Pick the call with more non-empty values
+                existing = deduped[key]["args"]
                 existing_filled = sum(1 for v in existing.values() if v not in ("", None, [], {}))
                 new_filled = sum(1 for v in a.values() if v not in ("", None, [], {}))
                 if new_filled > existing_filled:
-                    deduped[n] = call
+                    deduped[key] = call
         if len(deduped) < len(tool_calls):
             print(f"[DEDUP] tool_calls: {len(tool_calls)} -> {len(deduped)}")
             tool_calls = list(deduped.values())
@@ -1981,15 +2035,17 @@ async def chat_model_node(state: MainState):
                     unique_calls.append(call)
 
             final_calls = []
-            seen_names: dict[str, int] = {}
+            seen_name_args = set()
 
             for call in unique_calls:
                 n = call["name"]
                 meta = TOOL_INTENT_REGISTRY.get(n, {})
+                a_key = json.dumps(call["args"], sort_keys=True, default=str)
+                call_key = (n, a_key)
                 if meta.get("multi_call_ok"):
                     final_calls.append(call)
-                elif n not in seen_names:
-                    seen_names[n] = 1
+                elif call_key not in seen_name_args:
+                    seen_name_args.add(call_key)
                     final_calls.append(call)
 
             tool_calls = final_calls
@@ -2018,12 +2074,23 @@ async def chat_model_node(state: MainState):
         print(f"[TOTAL chat_model_node]: {sec(node_start)}s")
         print("========== CHAT MODEL NODE END ==========\n")
 
+        memory_answer = ""
+        if needs_date_clarification:
+            tools_str = ", ".join(needs_date_clarification)
+            memory_answer = (
+                f"Main aapki madad ke liye [**{needs_date_clarification[0]}**] tool use karna chahta hoon, "
+                f"lekin iske liye date range (from_date / to_date) chahiye. "
+                f"Kya aap kripya karke starting aur ending date bata sakte hain?\n"
+                f"Jaise: '1 April 2025 se 31 March 2026 ka data chahiye'"
+            )
+            print(f"[DATE NEAR] No date range available for: {tools_str}")
+
         return {
             "messages": [
                 HumanMessage(content=user_query),
                 response,
             ],
-            "memory_answer": "",
+            "memory_answer": memory_answer,
             "loop_count": loop_count + 1,
         }
 
@@ -2569,10 +2636,14 @@ async def deterministic_final_node(state: MainState):
 
     # -------------------------------------------------
     # Build conversation_context: extract entity names/IDs for memory
+    ENTITY_SKIP_TOOLS = {"get_top_customer", "get_sales_trend", "get_stock_levels"}
     ctx = dict(state.get("conversation_context", {}))
     entities = list(ctx.get("entities", []))
     seen_names = {e["name"] for e in entities if "name" in e}
     for tool_msg in tool_messages:
+        tool_name = getattr(tool_msg, "name", "")
+        if tool_name in ENTITY_SKIP_TOOLS:
+            continue
         parsed = parse_tool_output(tool_msg.content)
         recs = parsed.get("data", []) if isinstance(parsed, dict) else []
         if not isinstance(recs, list):
@@ -2869,6 +2940,9 @@ async def response_generation_node(state: MainState):
         "For example, if the user asked about 'Bangalore customers' and `get_stock_levels` also returned data, just answer about the customer.\n"
         "\n"
         "HARD RULES:\n"
+        "0. CRITICAL — NEVER output raw JSON, JSON blocks (```json … ```), or any data dump. "
+        "Your ENTIRE reply MUST be a plain conversational paragraph in the user's language. "
+        "NO exceptions. If you are tempted to include JSON, stop and write natural sentences instead.\n"
     )
     if previous_summary:
         system_prompt += f"\nFor background, the conversation history is:\n{previous_summary}\n\n"
@@ -2917,51 +2991,58 @@ async def response_generation_node(state: MainState):
           "If the user asked for netAmount, give netAmount and nothing else. "
           "1-3 sentences max.\n"
           "   WRONG: 'Additional Insights: The invoices are from Oct-Dec 2024. Next Steps: Review high amounts.'\n"
-          "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai, ledger CGLAM LIFESTYLE hai.'\n"
-           "7. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
+           "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai, ledger CGLAM LIFESTYLE hai.'\n"
+            "7. Never begin your response with 'Based on the provided', 'Based on the data', "
+            "'Here are the key points', 'Additional Insights', 'Summary Breakdown', "
+            "'Suggestions', 'Example Queries', 'Here is the summary', or any similar meta-framing. "
+            "Start directly with the answer to the user's query. "
+            "The 'For context' note below is for your reference only — do not repeat it or comment on it.\n"
+            "   WRONG: 'Based on the provided summary, here are some key points and suggestions:'\n"
+            "   CORRECT: 'aapke sales invoice mai ledger names hain: B2C_ANDHRA PRADESH, Hirva Beauty...'\n"
+             "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
 "Say so plainly: 'data nahi mila' or 'kuch nahi mila' in the user's language. "
 "Do NOT repeat back any entity name, company name, ID, or invoice number that the user mentioned — "
 "the tool found nothing, so there is nothing to confirm. Do NOT say records are hidden.\n"
-           "8. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
-           "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
-           "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
-           "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
-           "9. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
-           "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
-           "You have the full tool list; use every tool that matches a query part.\n"
-             "10. When one tool found the exact record the user asked for (e.g. specific invoiceNo), "
-             "answer ONLY from that tool's data. Ignore all other tool outputs completely. "
-             "Do NOT describe, summarize, or mention any other tool's results.\n"
-             "   WRONG: 'Purchase invoices have 684 records but Sales has AI/0324/0010 with netAmount 29315.7'\n"
-             "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai' (purchase data not mentioned at all)\n"
-             "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
-             "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
-             "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
-             "11. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
-             "use the search-ledger tool. Set `groupType` based on the noun: "
-             "expense for office expenses/salary/rent, party for customers/vendors, "
-             "asset for fixed assets. Infer the noun from the query.\n"
-              "12. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
-              "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
-              "count, or split, ALWAYS use `get_gst_summary`. It returns ALL categories together — "
-              "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
-              "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
-              "not the GST category breakdown.\n"
-               "13. LIST TRUNCATION — CRITICAL: If the user's query is a broad list (not a specific lookup) "
-               "and truncation_info is present showing fewer records than total, you MUST in your FIRST response "
-               "tell the user 'Showing first X of Y records. Add a filter like date range, party name, city, "
-               "or status to narrow down.' This is MANDATORY — never skip this. "
-               "DO NOT attempt analysis, recommendations, or summaries based on partial data.\n"
-               "    CORRECT: 'Showing first 10 of 854 products. Add a filter like product name to narrow down.'\n"
-               "    WRONG: 'Here are 10 products: ...' (no truncation message)\n"
-              "14. FIELD DISPLAY RULES:\n"
-              "    - For list queries (default): show max 5 most important fields per record. "
-              "Pick the 5 fields most relevant to the user's question (e.g. id, name, "
-              "invoiceNo, netAmount, outstanding).\n"
-              "    - For records with 5 or fewer fields: show all fields.\n"
-              "    - When the user asks for 'all details' / 'sabhi detail' / 'full info' / "
-              "'sara detail' (already covered by rule 10): show EVERY field — this overrides "
-              "the 5-field limit completely.\n"
+            "9. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
+            "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
+            "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
+            "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
+            "10. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
+            "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
+            "You have the full tool list; use every tool that matches a query part.\n"
+              "11. When one tool found the exact record the user asked for (e.g. specific invoiceNo), "
+              "answer ONLY from that tool's data. Ignore all other tool outputs completely. "
+              "Do NOT describe, summarize, or mention any other tool's results.\n"
+              "   WRONG: 'Purchase invoices have 684 records but Sales has AI/0324/0010 with netAmount 29315.7'\n"
+              "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai' (purchase data not mentioned at all)\n"
+              "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
+              "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
+              "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
+              "12. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
+              "use the search-ledger tool. Set `groupType` based on the noun: "
+              "expense for office expenses/salary/rent, party for customers/vendors, "
+              "asset for fixed assets. Infer the noun from the query.\n"
+               "13. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
+               "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
+               "count, or split, ALWAYS use `get_gst_summary`. It returns ALL categories together — "
+               "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
+               "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
+               "not the GST category breakdown.\n"
+                "14. LIST TRUNCATION — CRITICAL: If the user's query is a broad list (not a specific lookup) "
+                "and truncation_info is present showing fewer records than total, you MUST in your FIRST response "
+                "tell the user 'Showing first X of Y records. Add a filter like date range, party name, city, "
+                "or status to narrow down.' This is MANDATORY — never skip this. "
+                "DO NOT attempt analysis, recommendations, or summaries based on partial data.\n"
+                "    CORRECT: 'Showing first 10 of 854 products. Add a filter like product name to narrow down.'\n"
+                "    WRONG: 'Here are 10 products: ...' (no truncation message)\n"
+               "15. FIELD DISPLAY RULES:\n"
+               "    - For list queries (default): show max 5 most important fields per record. "
+               "Pick the 5 fields most relevant to the user's question (e.g. id, name, "
+               "invoiceNo, netAmount, outstanding).\n"
+               "    - For records with 5 or fewer fields: show all fields.\n"
+               "    - When the user asks for 'all details' / 'sabhi detail' / 'full info' / "
+               "'sara detail' (already covered by rule 11): show EVERY field — this overrides "
+               "the 5-field limit completely.\n"
             "/no_think\n"
     )
 
@@ -2969,6 +3050,7 @@ async def response_generation_node(state: MainState):
     SAFETY_MAX_RECORDS = 15
     final_response_prompt = dict(final_response)
     final_response_prompt.pop("truncation_info", None)  # added to human_prompt below instead
+    summary_text = final_response_prompt.pop("summary", "") or ""  # strip from JSON; add as plain-text note below
     data = final_response_prompt.get("data", {})
     if isinstance(data, dict):
         truncated = {}
@@ -3009,8 +3091,10 @@ async def response_generation_node(state: MainState):
         if matched_tool and matched_tool in final_response_prompt.get("data", {}):
             filtered_data = {matched_tool: final_response_prompt["data"][matched_tool]}
             final_response_prompt["data"] = filtered_data
-            final_response_prompt["summary"] = make_summary(filtered_data, [])
-        final_response_prompt["_invoice_match"] = invoice_match
+            summary_text = make_summary(filtered_data, [])
+    # Ensure summary never leaks into JSON blob
+    final_response_prompt.pop("summary", None)
+    final_response_prompt.pop("_invoice_match", None)
 
     truncation_info = final_response.get("truncation_info", {}) or {}
     truncation_note = ""
@@ -3024,10 +3108,34 @@ async def response_generation_node(state: MainState):
     human_prompt = (
         f"USER QUERY:\n{original_query}\n\n"
         f"TOOL RESULTS (JSON):\n{json.dumps(final_response_prompt, indent=2, ensure_ascii=False)}\n\n"
-        f"Summary : {final_response_prompt.get('summary','')}\n\n"
-        f"{truncation_note}"
-        f"{detail_note}"
     )
+    if summary_text:
+        human_prompt += f"For context (do not repeat this verbatim): {summary_text}\n\n"
+    human_prompt += truncation_note + detail_note
+
+    def _clean_llm_response(text: str) -> str:
+        """Strip meta-framing, JSON dumps, and tool names from LLM output."""
+        text = text.strip()
+        # Strip leading lines that are pure meta-framing
+        meta_prefixes = (
+            "based on", "here are", "here is", "from the", "according to",
+            "the tool results", "the data shows", "the following", "below are",
+            "i have analyzed", "after reviewing", "in response to",
+        )
+        lines = text.split("\n")
+        cleaned = []
+        for line in lines:
+            stripped = line.strip().lower()
+            if any(stripped.startswith(p) for p in meta_prefixes) and len(stripped) < 80:
+                continue
+            # Skip bare "json" or "```json" fences
+            if stripped in ("json", "```json", "```", "````"):
+                continue
+            cleaned.append(line)
+        text = "\n".join(cleaned).strip()
+        # Strip trailing fence if present
+        text = re.sub(r'```\s*$', '', text).strip()
+        return text
 
     try:
         full_content = ""
@@ -3040,18 +3148,26 @@ async def response_generation_node(state: MainState):
         response_text = full_content.strip()
         if not response_text:
             raise ValueError("Empty response from LLM")
+        response_text = _clean_llm_response(response_text)
+        if not response_text.strip():
+            raise ValueError("Response had only meta-framing/JSON after cleaning")
     except Exception as e:
         print(f"Error in response generation node: {e}")
-        # Inline fallback instead of calling format_response_as_chat_text (not imported here)
-        data = final_response.get("data", {}) if isinstance(final_response, dict) else {}
-        summary = final_response.get("summary", "") if isinstance(final_response, dict) else str(final_response)
-        lines = [summary] if summary else []
-        for tool_name, records in data.items() if isinstance(data, dict) else []:
-            if records:
-                lines.append(f"\n{tool_name}:")
-                for r in records[:10] if isinstance(records, list) else [records]:
-                    if isinstance(r, dict):
-                        parts = [f"{k}={v}" for k, v in r.items()]
-                        lines.append("  " + ", ".join(parts))
-        response_text = "\n".join(lines) if lines else str(final_response)
+        # Better fallback: use the pre-built summary text for a conversational response
+        summary_text = final_response.get("summary", "") if isinstance(final_response, dict) else ""
+        if summary_text and len(summary_text) > 20:
+            response_text = summary_text
+        else:
+            # Minimal structured fallback — not raw JSON
+            data = final_response.get("data", {}) if isinstance(final_response, dict) else {}
+            parts = []
+            for tool_name, records in data.items() if isinstance(data, dict) else []:
+                if records and isinstance(records, list):
+                    count = len(records)
+                    parts.append(f"{tool_name}: {count} record(s)")
+            response_text = (
+                "; ".join(parts)
+                if parts
+                else (str(final_response)[:500] if isinstance(final_response, dict) else str(final_response)[:500])
+            )
     return {"response_text": response_text}

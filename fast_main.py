@@ -8,6 +8,7 @@ import time
 import asyncio
 import copy
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from collections import OrderedDict
 import uvicorn
@@ -36,9 +37,23 @@ from src.graph import graph_builder
 from src.config import llm, normalizer_llm, get_cfg
 import session_store
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("FastAPI started. Warming up worker LLM...")
+    start = time.perf_counter()
+    try:
+        await llm.ainvoke([SystemMessage(content="Return only: OK\n/no_think"),
+                           HumanMessage(content="ping")])
+        elapsed_time = time.perf_counter() - start
+        print(f"Worker LLM warmup completed in {round(elapsed_time, 3)}s")
+    except Exception as e:
+        print("LLM warmup failed (will load on first query):", e)
+    yield
+
 app = FastAPI(
     title="CHAPTER-1-ASSIST",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 graph = graph_builder()
@@ -228,11 +243,15 @@ async def run_graph_query(
     past_messages: list = None,
     langsmith_config: dict | None = None,
     past_summary: str | None = None,
+    past_conversation_context: dict | None = None,
+    past_last_tool_call: dict | None = None,
 ):
     cached_result = await get_cached_final_response(user_query)
     if cached_result is not None:
-        # Keep session memory unchanged on cache hits.
         cached_result["updated_messages"] = past_messages or []
+        # Don't update context on cache hit — keep previous session state
+        cached_result["conversation_context"] = past_conversation_context
+        cached_result["last_tool_call"] = past_last_tool_call
         return cached_result
 
     start_time = time.perf_counter()
@@ -256,6 +275,8 @@ async def run_graph_query(
         "document_type": "",
         "unsupported_parts": [],
         "summary": past_summary or "",
+        "conversation_context": past_conversation_context or {},
+        "last_tool_call": past_last_tool_call or {},
     }
 
     final_response = None
@@ -267,6 +288,8 @@ async def run_graph_query(
     config = {**config, "configurable": {"thread_id": session_id}}
     try:
         summary_tracker = past_summary or ""
+        context_tracker = dict(past_conversation_context or {})
+        last_tool_tracker = dict(past_last_tool_call or {})
         response_text = None
         async for chunks in _timeout_iterate(
             graph.astream(
@@ -293,6 +316,10 @@ async def run_graph_query(
                                 messages_tracker.append(msg)
                     if "summary" in state_update and state_update["summary"]:
                         summary_tracker = state_update["summary"]
+                    if "conversation_context" in state_update:
+                        context_tracker = dict(state_update["conversation_context"])
+                    if "last_tool_call" in state_update:
+                        last_tool_tracker = dict(state_update["last_tool_call"])
                     if node_name == "chat_model":
                         messages = state_update.get("messages", [])
                         if not messages:
@@ -368,6 +395,8 @@ async def run_graph_query(
             "total_time_sec": total_time,
             "updated_messages": messages_tracker,
             "summary": summary_tracker or "",
+            "conversation_context": context_tracker,
+            "last_tool_call": last_tool_tracker,
         }
 
     except Exception as e:
@@ -386,6 +415,8 @@ async def run_graph_query(
             "total_time_sec": total_time,
             "updated_messages": messages_tracker,
             "summary": summary_tracker or "",
+            "conversation_context": context_tracker,
+            "last_tool_call": last_tool_tracker,
         }
     print(f"[Remove Messages Result] total messages tracked:{len(messages_tracker)}. Final summary: {summary_tracker}")
     total_time = round(time.perf_counter() - start_time, 3)
@@ -407,29 +438,15 @@ async def run_graph_query(
         "total_time_sec": total_time,
         "updated_messages": messages_tracker,
         "summary": summary_tracker,
+        "conversation_context": context_tracker,
+        "last_tool_call": last_tool_tracker,
     }
 
     await set_cached_final_response(user_query, result)
     return result
 
 
-@app.on_event("startup")
-async def startup_event():
-    # try:
-    #     session_store.init_db()
-    #     print("Session store initialized.")
-    # except Exception as e:
-    #     print("Session store init failed:", e)
 
-    try:
-        print("FastAPI started. Graph already built. Warming up worker LLM...")
-        start = time.perf_counter()
-        await llm.ainvoke([SystemMessage(content="Return only: OK\n/no_think"),
-                           HumanMessage(content="ping")])
-        elapsed_time = time.perf_counter() - start
-        print(f"Worker LLM warmup completed in {round(elapsed_time, 3)}s")
-    except Exception as e:
-        print("LLM warmup failed (will load on first query):", e)
 
 
 @app.get("/")
@@ -446,6 +463,7 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
 
     past_messages = session_store.load_messages(session_id)
     past_summary = (session or {}).get("summary", "")
+    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
 
     langsmith_config = {
         "run_name": "CHAPTER1_ASSIST_CHAT",
@@ -462,6 +480,8 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
             user_query=request.query,
             past_messages=past_messages,
             past_summary=past_summary,
+            past_conversation_context=past_context,
+            past_last_tool_call=past_last_tool,
             langsmith_config=langsmith_config,
         )
 
@@ -470,10 +490,14 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
         if response_text:
             updated_messages.append(AIMessage(content=response_text))
 
+        context = result.get("conversation_context")
+        last_tool = result.get("last_tool_call")
         session_store.save_session(
             session_id,
             updated_messages,
             result.get("summary", ""),
+            context,
+            last_tool,
         )
 
         result["session_id"] = session_id
@@ -510,6 +534,7 @@ async def chat_stream(request: ChatRequest):
 
     past_messages = session_store.load_messages(session_id)
     past_summary = (session or {}).get("summary", "")
+    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
 
     langsmith_config = {
         "run_name": "CHAPTER1_ASSIST_CHAT_STREAM",
@@ -540,6 +565,8 @@ async def chat_stream(request: ChatRequest):
         "document_type": "",
         "unsupported_parts": [],
         "summary": past_summary or "",
+        "conversation_context": past_context or {},
+        "last_tool_call": past_last_tool or {},
     }
 
     config = {
@@ -550,6 +577,8 @@ async def chat_stream(request: ChatRequest):
     async def event_generator():
         messages_tracker = list(past_messages)
         summary_tracker = past_summary or ""
+        context_tracker = dict(past_context or {})
+        last_tool_tracker = dict(past_last_tool or {})
         response_text = None
         stream_data = {}
         tokens_emitted = False
@@ -587,6 +616,10 @@ async def chat_stream(request: ChatRequest):
                                         messages_tracker.append(msg)
                             if "summary" in output and output["summary"]:
                                 summary_tracker = output["summary"]
+                            if "conversation_context" in output:
+                                context_tracker = dict(output["conversation_context"])
+                            if "last_tool_call" in output:
+                                last_tool_tracker = dict(output["last_tool_call"])
                             if "final_response" in output and isinstance(output["final_response"], dict):
                                 d = output["final_response"].get("data", {})
                                 if d:
@@ -604,7 +637,8 @@ async def chat_stream(request: ChatRequest):
                 try:
                     updated = list(messages_tracker)
                     updated.append(AIMessage(content=response_text))
-                    session_store.save_session(session_id, updated, summary_tracker)
+                    session_store.save_session(session_id, updated, summary_tracker,
+                                               context_tracker, last_tool_tracker)
                 except Exception:
                     pass
 
@@ -613,7 +647,8 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps({'token': response_text})}\n\n"
             updated = list(messages_tracker)
             updated.append(AIMessage(content=response_text))
-            session_store.save_session(session_id, updated, summary_tracker)
+            session_store.save_session(session_id, updated, summary_tracker,
+                                       context_tracker, last_tool_tracker)
 
         yield f"data: {json.dumps({'data': stream_data})}\n\n"
         yield f"data: {json.dumps({'session_id': session_id, 'done': True})}\n\n"
@@ -630,6 +665,7 @@ async def chat_text(request: ChatRequest):
 
     past_messages = session_store.load_messages(session_id)
     past_summary = (session or {}).get("summary", "")
+    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
 
     langsmith_config = {
         "run_name": "CHAPTER1_ASSIST_CHAT_TEXT",
@@ -646,6 +682,8 @@ async def chat_text(request: ChatRequest):
             user_query=request.query,
             past_messages=past_messages,
             past_summary=past_summary,
+            past_conversation_context=past_context,
+            past_last_tool_call=past_last_tool,
             langsmith_config=langsmith_config,
         )
 
@@ -658,6 +696,8 @@ async def chat_text(request: ChatRequest):
             session_id,
             updated_messages,
             result.get("summary", ""),
+            result.get("conversation_context"),
+            result.get("last_tool_call"),
         )
 
         result.pop("updated_messages", None)

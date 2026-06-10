@@ -97,13 +97,19 @@ def get_session(session_id: str) -> Optional[dict]:
         return dict(data)
 
 
-def save_session(session_id: str, messages: list, summary: str = ""):
+def save_session(session_id: str, messages: list, summary: str = "",
+                 conversation_context: dict | None = None,
+                 last_tool_call: dict | None = None):
     serialized = [message_to_dict(m) for m in messages]
     now = _now()
     with _lock:
         if session_id in _sessions:
             _sessions[session_id]["messages"] = serialized
             _sessions[session_id]["summary"] = summary
+            if conversation_context is not None:
+                _sessions[session_id]["conversation_context"] = conversation_context
+            if last_tool_call is not None:
+                _sessions[session_id]["last_tool_call"] = last_tool_call
             _sessions[session_id]["updated_at"] = now
         else:
             _sessions[session_id] = {
@@ -114,6 +120,10 @@ def save_session(session_id: str, messages: list, summary: str = ""):
                 "created_at": now,
                 "updated_at": now,
             }
+            if conversation_context is not None:
+                _sessions[session_id]["conversation_context"] = conversation_context
+            if last_tool_call is not None:
+                _sessions[session_id]["last_tool_call"] = last_tool_call
     # _save()
 
 
@@ -151,3 +161,15 @@ def load_messages(session_id: str) -> list:
     if not dicts:
         return []
     return messages_from_dict(dicts) if dicts else []
+
+
+def load_session_context(session_id: str) -> tuple[str, dict | None, dict | None]:
+    """Returns (summary, conversation_context, last_tool_call) for the session."""
+    with _lock:
+        data = _sessions.get(session_id)
+        if data is None:
+            return ("", None, None)
+        summary = data.get("summary", "") or ""
+        ctx = data.get("conversation_context")
+        ltc = data.get("last_tool_call")
+    return summary, ctx, ltc
