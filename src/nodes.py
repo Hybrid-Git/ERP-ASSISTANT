@@ -98,7 +98,8 @@ def _filter_registry_by_domain(domains: set[str]) -> dict:
 
 
 # ── Pronoun resolution ──
-HINGLISH_PRONOUNS = ["uska", "iska", "unka", "iski", "inki", "uski", "woh", "uss", "in sab"]
+HINGLISH_PRONOUNS = ["uska", "iska", "unka", "iski", "inki", "uski", "woh", "uss", "in sab", "dono", "in dono", "ye dono", "in dono ko"]
+DONO_PRONOUNS = {"dono", "in dono", "ye dono", "in dono ko"}
 
 
 def _has_own_identifiers(query: str) -> bool:
@@ -133,6 +134,15 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
     # Fallback: generic entities list (accumulated from all tool data)
     entities = (conv_ctx or {}).get("entities", [])
     if entities:
+        is_plural = any(re.search(rf'\b{re.escape(p)}\b', query.lower()) for p in DONO_PRONOUNS)
+        if is_plural and len(entities) >= 2:
+            names = [e.get("name", "") for e in entities[-2:] if e.get("name")]
+            if len(names) >= 2:
+                resolved = query
+                replacement = f"{names[0]} aur {names[1]}"
+                for p in found:
+                    resolved = re.sub(rf'\b{re.escape(p)}\b', replacement, resolved, flags=re.IGNORECASE)
+                return resolved, [{"original": p, "resolved": replacement, "type": "any"} for p in found]
         name = entities[-1].get("name", "")
         if name:
             resolved = query
@@ -1111,6 +1121,11 @@ def build_system_prompt(
         "You MUST call at least one tool. Never answer in prose without a tool call.",
         "Do NOT output any thinking or reasoning — call the tool directly.",
         "",
+        "STRICT ANTI-HALLUCINATION RULES:",
+        "- CRITICAL: Do NOT search for quantity/scope words. Never pass words like 'sara', 'sab', 'all', 'every', 'each', 'saare', 'poora', 'pure', 'sabhi', 'saari', 'sare', 'sari' as the 'search' or 'term' parameter. These describe scope ('all'/'every'), NOT entity names. If the user asks for 'all records', call the list tool without a search filter.",
+        "- CRITICAL: Never invent entity identifiers. Never pass an ID, name, or search term that you made up or inferred from non-entity words. Only use IDs/names that you have actually seen in prior tool results. If you lack a real ID, call a list/search tool first and extract the ID from its results — do not guess.",
+        "- CRITICAL: When the user's query has been updated to include specific entity names (e.g., resolved from pronouns like 'dono'), use ONLY those exact names as your search/term parameters. Do NOT use entity names from other previous tool results (e.g., top_customers, top_vendors) unless they match the resolved names. For example, if the resolved query says 'NYKAA... aur Nykaa Warehouse...', search for THOSE names only — NOT for B2CTELANGANA or any other name from get_top_customer.",
+        "",
         "FOLLOW-UP RULES:",
         "- If the answer is already in previous tool results, use it directly without a new API call.",
         "- When a tool has sort_field/sort_order parameters and the user asks for extreme/comparative values (highest, most, least, top, bottom, etc.), ALWAYS set sort_field to the field being compared and sort_order accordingly: 'desc' for highest/most/top, 'asc' for lowest/least/bottom.",
@@ -1740,10 +1755,6 @@ async def chat_model_node(state: MainState):
                 if td and all_part_domains and not td & all_part_domains:
                     print(f"[FORCE-INJECT] Skipping {tn} (domain {td} no overlap with {all_part_domains})")
                     continue
-                # Skip only if ALL of tool's domains are already covered by an already-called tool
-                if td and covered_domains and td.issubset(covered_domains):
-                    print(f"[FORCE-INJECT] Skipping {tn} (domain {td} already covered by {covered_domains})")
-                    continue
                 # Skip when no hard domains detected AND the query has no keyword match for this tool
                 if not all_part_domains:
                     meta = TOOL_INTENT_REGISTRY.get(tn, {})
@@ -1867,6 +1878,13 @@ async def chat_model_node(state: MainState):
             if re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum)\b', combined_q) and not re.search(r'\b(top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q):
                 if "limit" not in new_args or new_args.get("limit", 10) > 5:
                     new_args["limit"] = 1
+
+            # Raise limit for broad listing queries so the API returns enough data
+            # for deterministic_final_node's truncation logic to work properly
+            if "limit" in new_args and isinstance(new_args.get("limit"), int) and new_args["limit"] <= 10:
+                if not re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum|top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q):
+                    new_args["limit"] = 50
+                    print(f"[LIMIT] {name}: raised limit from 10 to 50")
 
             if name == "get_gst_summary" or name in ("get_tds_outstanding", "get_tcs_outstanding"):
                 print(f"[{name.upper()} FINAL ARGS] {json.dumps(new_args, default=str)}")
@@ -2350,14 +2368,6 @@ def extract_query_identifiers(query: str, last_tool_call: dict | None = None) ->
                 identifiers["city"] = canonical
                 break
 
-    # 3. Entity name from tool call args (most reliable: search/term fields)
-    if last_tool_call:
-        for tool_name, args in last_tool_call.items():
-            raw = (args.get("search") or args.get("term") or "").strip()
-            if len(raw) > 2:
-                identifiers["name"] = raw
-                break
-
     return identifiers
 
 
@@ -2383,14 +2393,14 @@ def apply_identifier_filter(data: dict, identifiers: dict) -> dict:
             result[tool_name] = records
             continue
 
-        kept = []
+        kept_summaries = []
+        kept_details = []
         for record in records:
             if not isinstance(record, dict):
-                kept.append(record)
+                kept_details.append(record)
                 continue
-            # Always preserve summary rows
             if record.get("recordType") == "summary":
-                kept.append(record)
+                kept_summaries.append(record)
                 continue
             matched = False
             for f in tool_filters:
@@ -2414,9 +2424,11 @@ def apply_identifier_filter(data: dict, identifiers: dict) -> dict:
                         matched = True
                         break
             if matched:
-                kept.append(record)
+                kept_details.append(record)
 
-        if kept:
+        kept = kept_summaries + kept_details
+
+        if kept_details:
             result[tool_name] = kept
             if len(kept) < len(records):
                 print(f"[IDENT-FILTER] {tool_name}: kept {len(kept)}/{len(records)} records matching {identifiers}")
@@ -2446,11 +2458,12 @@ async def deterministic_final_node(state: MainState):
     tools_used = []
     errors = []
     total_rows = 0
+    total_rows_per_tool = {}
     invoice_tool_match = None
     invoice_matches = {}
     current_tool_call_ids = set()
-    # Accumulate tool calls across rounds — start from existing state
-    last_tool_call = dict(state.get("last_tool_call", {}))
+    # Only use current round's tool calls (no cross-round contamination)
+    last_tool_call = {}
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
             current_tool_call_ids = {tc.get("id") for tc in msg.tool_calls if tc.get("id")}
@@ -2528,7 +2541,10 @@ async def deterministic_final_node(state: MainState):
             records = [records]
 
         if isinstance(parsed, dict):
-            total_rows += parsed.get("total_rows", 0) or 0
+            tr = parsed.get("total_rows", 0) or 0
+            total_rows += tr
+            if tr > 0:
+                total_rows_per_tool[tool_name] = max(total_rows_per_tool.get(tool_name, 0), tr)
         if isinstance(parsed, dict) and parsed.get("_invoice_found") and parsed.get("matched_record"):
             invoice_matches[tool_name] = {
                 "tool_name": tool_name,
@@ -2594,12 +2610,15 @@ async def deterministic_final_node(state: MainState):
     MAX_RECORDS = get_cfg("thresholds", "max_records", default=10)
     truncation_info = {}
     for tool_name, records in data.items():
-        if isinstance(records, list) and len(records) > MAX_RECORDS:
-            truncation_info[tool_name] = {
-                "total": len(records),
-                "shown": MAX_RECORDS,
-            }
-            data[tool_name] = records[:MAX_RECORDS]
+        if isinstance(records, list):
+            actual_count = len(records)
+            total = total_rows_per_tool.get(tool_name, actual_count)
+            if total > MAX_RECORDS:
+                truncation_info[tool_name] = {
+                    "total": total,
+                    "shown": min(actual_count, MAX_RECORDS),
+                }
+                data[tool_name] = records[:MAX_RECORDS]
 
     # Set focus_entity for pronoun resolution when exactly one non-summary record exists
     if not ctx.get("focus_entity"):
@@ -2928,11 +2947,13 @@ async def response_generation_node(state: MainState):
               "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
               "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
               "not the GST category breakdown.\n"
-              "13. LIST TRUNCATION: If the user's query is a broad list (not a specific lookup) "
-              "and truncation_info is present showing fewer records than total, tell the user "
-              "'Showing first X of Y records' and suggest adding a filter like date range, "
-              "party name, city, or status to narrow results. "
-              "DO NOT attempt analysis, recommendations, or summaries based on partial data.\n"
+               "13. LIST TRUNCATION — CRITICAL: If the user's query is a broad list (not a specific lookup) "
+               "and truncation_info is present showing fewer records than total, you MUST in your FIRST response "
+               "tell the user 'Showing first X of Y records. Add a filter like date range, party name, city, "
+               "or status to narrow down.' This is MANDATORY — never skip this. "
+               "DO NOT attempt analysis, recommendations, or summaries based on partial data.\n"
+               "    CORRECT: 'Showing first 10 of 854 products. Add a filter like product name to narrow down.'\n"
+               "    WRONG: 'Here are 10 products: ...' (no truncation message)\n"
               "14. FIELD DISPLAY RULES:\n"
               "    - For list queries (default): show max 5 most important fields per record. "
               "Pick the 5 fields most relevant to the user's question (e.g. id, name, "
@@ -2957,6 +2978,24 @@ async def response_generation_node(state: MainState):
             else:
                 truncated[tool_name] = records
         final_response_prompt["data"] = truncated
+
+    # Domain-based relevance filter: for ambiguous follow-ups (document_type='general'),
+    # keep only customer/vendor-domain tools to prevent LLM field mixing
+    doc_type = (state.get("document_type", "") or "").lower()
+    if doc_type == "general":
+        orig_q = (state.get("original_query", "") or "").lower()
+        is_follow_up = any(re.search(rf'\b{re.escape(p)}\b', orig_q) for p in HINGLISH_PRONOUNS)
+        if is_follow_up:
+            customer_vendor_domains = {"customer", "vendor"}
+            filtered = {}
+            for tool_name, records in truncated.items():
+                td = set(TOOL_DOMAINS.get(tool_name, []))
+                if td & customer_vendor_domains:
+                    filtered[tool_name] = records
+                else:
+                    print(f"[DOMAIN-FILTER] {tool_name}: {len(records) if isinstance(records, list) else 'non-list'} records removed (domain {td} not in customer/vendor)")
+            if filtered:
+                final_response_prompt["data"] = filtered
 
     # Detect "all details" request
     detail_mode = bool(re.search(

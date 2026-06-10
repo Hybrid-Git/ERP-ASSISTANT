@@ -435,7 +435,7 @@ identifier_patterns:
 
 # Stopwords used when extracting entity names from tool call args
 name_extraction:
-  stopwords: [the, a, an, of, for, to, in, 'on', ka, ki, ke, ko, se, hai, hain, batao, bata, dikhao, chahiye, chahie, wala, wali, wale, customer, party, vendor, product, invoice, account, id, number, name, all, show, give, list, find, search, tell, get, want, need, uska, uski, uske, kya, aur, any, please, like, about, with, this, that, these, those]
+  stopwords: [the, a, an, of, for, to, in, 'on', ka, ki, ke, ko, se, hai, hain, batao, bata, dikhao, chahiye, chahie, wala, wali, wale, customer, party, vendor, product, invoice, account, id, number, name, all, show, give, list, find, search, tell, get, want, need, uska, uski, uske, kya, aur, any, please, like, about, with, this, that, these, those, sara, sare, saare, sari, saari, sabhi, sab, poora, pure, puri, saara, poori, sabse]
   min_words: 2
   max_words: 6
 
