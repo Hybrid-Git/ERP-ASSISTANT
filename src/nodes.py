@@ -1,6 +1,6 @@
 from src.schema import MainState
 from src.tools_api import tools_dict, tools
-from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES, get_field_triggers, infer_requested_fields_from_registry, CITY_WORDS
+from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES, CITY_WORDS
 from collections import Counter
 from src.config import llm, normalizer_llm, get_cfg,summary_llm
 import time
@@ -31,7 +31,7 @@ LIST_WORDS = get_cfg("list_words", default=[])
 DOMAIN_KEYWORDS = {
     "sales": ["sales", "sale", "sell", "sold", "overdue", "receivable", "debtor", "billing"],
     "purchase": ["purchase", "kharidi", "buy", "bought", "payable", "creditor", "bills payable"],
-    "customer": ["customer", "client", "party", "ledger", "customer name", "customer list", "customer code"],
+    "customer": ["customer", "client", "party", "ledger", "customer name", "customer list", "customer code", "name and id", "name aur id"],
     "vendor": ["vendor", "supplier", "vendor list"],
     "gst": ["gst", "gst summary", "gst detail", "gstr", "taxable", "igst", "cgst", "sgst", "b2b", "b2c"],
     "tax": ["tds", "tcs", "tax deducted", "tax collected", "tax outstanding"],
@@ -40,7 +40,7 @@ DOMAIN_KEYWORDS = {
 }
 
 INVOICE_PATTERNS = {
-    "sales": [r"\bA/\d{4}/C\d{4}\b", r"\bSI-?\d+\b", r"\bOUT-?\d+\b"],
+    "sales": [r"\bA/\d{4}/C\d{4}\b", r"\bAI/\d{4}/\d{4}\b", r"\bSI-?\d+\b", r"\bOUT-?\d+\b"],
     "purchase": [r"\bPR-?\d+\b"],
 }
 
@@ -95,10 +95,24 @@ def _filter_registry_by_domain(domains: set[str]) -> dict:
 HINGLISH_PRONOUNS = ["uska", "iska", "unka", "iski", "inki", "uski", "woh", "uss", "in sab"]
 
 
+def _has_own_identifiers(query: str) -> bool:
+    q = query or ""
+    if re.search(r'\b[A-Z]+/\d{2,}', q):
+        return True
+    if re.search(r'\b[A-Z]{2,}\d{4,}\b', q):
+        return True
+    if re.search(r'\b\d{6,}\b', q):
+        return True
+    return False
+
+
 def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None) -> tuple[str, list[dict]]:
     q_lower = query.lower()
     found = [p for p in HINGLISH_PRONOUNS if re.search(rf'\b{re.escape(p)}\b', q_lower)]
     if not found:
+        return query, []
+
+    if _has_own_identifiers(query):
         return query, []
 
     entities = (conv_ctx or {}).get("entities", [])
@@ -150,12 +164,6 @@ def _build_tool_embeddings():
             text_parts = [meta.get("description", "")]
             text_parts.extend(meta.get("aliases", []))
             text_parts.extend(meta.get("keywords", []))
-            fields = meta.get("fields", [])
-            falias = meta.get("field_aliases", {})
-            for fname in fields:
-                text_parts.append(fname)
-                if fname in falias:
-                    text_parts.extend(falias[fname][:2])
             text = " ".join(str(p) for p in text_parts if p)
             _tool_embeddings[tool_name] = embedding_model.embed_query(text)
     except Exception as e:
@@ -520,9 +528,11 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     query_tokens = {t for t in query_part.lower().split() if t not in _STOP_WORDS}
 
     scores = []
-    for tool_name, tool_emb in _tool_embeddings.items():
+    for tool_name in registry:
+        if tool_name not in _tool_embeddings:
+            continue
+        tool_emb = _tool_embeddings[tool_name]
         emb_sim = _cosine_sim(query_emb, tool_emb)
-
         meta = registry.get(tool_name, {})
         tool_text = f"{meta.get('description', '')} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
         tool_tokens = {t for t in tool_text.lower().split() if t not in _STOP_WORDS}
@@ -807,22 +817,37 @@ async def semantic_search(state: MainState) -> MainState:
             else:
                 print(f"No tools found for part '{part}' via reranker or keyword fallback")
 
+        combined_hard_domains: set[str] = set()
+        for qp in query_parts:
+            hd, _ = classify_domains(qp)
+            combined_hard_domains |= hd
+
+        maybe_append = []
         if document_type in {"product", "inventory", "stock"}:
-            selected_tool_groups.append(["get_stock_levels"])
+            maybe_append = ["get_stock_levels"]
         elif document_type in {"customer", "party"}:
-            selected_tool_groups.append(["get_customer"])
+            maybe_append = ["get_customer"]
         elif document_type in {"customer_ledger", "ledger"}:
-            selected_tool_groups.append(["get_customer_ledger"])
+            maybe_append = ["get_customer_ledger"]
         elif document_type in {"purchase_invoice", "purchase"}:
-            selected_tool_groups.append(["get_outstanding_purchase_invoices", "get_purchase_summary"])
+            maybe_append = ["get_outstanding_purchase_invoices", "get_purchase_summary"]
         elif document_type in {"sales_invoice", "sales"}:
-            selected_tool_groups.append(["get_outstanding_sales_invoices", "get_overdue_invoices", "get_sales_summary"])
+            maybe_append = ["get_outstanding_sales_invoices", "get_overdue_invoices", "get_sales_summary"]
         elif document_type in {"gst", "gst_report", "gst_summary"}:
-            selected_tool_groups.append(["get_gst_summary"])
+            maybe_append = ["get_gst_summary"]
+
+        if maybe_append:
+            if combined_hard_domains:
+                filtered = [t for t in maybe_append if set(TOOL_DOMAINS.get(t, [])) & combined_hard_domains]
+                if filtered:
+                    maybe_append = filtered
+                else:
+                    maybe_append = maybe_append[:1]
+            selected_tool_groups.append(maybe_append)
 
         selected_tools = merge_unique_tools(selected_tool_groups)
         selected_tools = [t for t in selected_tools if t in tools_dict]
-        MAX_TOOLS_FOR_LLM = 8
+        MAX_TOOLS_FOR_LLM = 5
         if len(selected_tools) > MAX_TOOLS_FOR_LLM:
             print(f"Trimming selected_tools from {len(selected_tools)} to {MAX_TOOLS_FOR_LLM}")
             preserved_order = []
@@ -856,7 +881,7 @@ async def semantic_search(state: MainState) -> MainState:
                 print(f"Fallback selected tools: {selected_tools}")
 
         combined = f"{original_query or ''} {canonical_query or ''}"
-        if re.search(r'[A-Z]+/\d{2}-\d{2}/\d{3}', combined):
+        if re.search(r'[A-Z]+/\d{2}-\d{2}/\d{3}', combined) or re.search(r'AI/\d{4}/\d{4}', combined):
             selected_tools = [t for t in selected_tools if t not in ('get_customer',)]
 
         # Exclude get_customer_ledger when query contains an invoice pattern
@@ -921,30 +946,7 @@ async def semantic_search(state: MainState) -> MainState:
 # SYSTEM PROMPT
 # ============================================
 def _build_tool_desc(tool_name: str, meta: dict) -> str:
-    """One-line tool description for the system prompt."""
-    fields = meta.get("fields", [])
-    field_str = ",".join(fields[:5])
-    if len(fields) > 5:
-        field_str += "..."
-    return f"{tool_name}={meta.get('category', '')}: {meta.get('description', '')} Fields: [{field_str}]."
-
-
-def _build_field_examples(tool_name: str, meta: dict) -> list[str]:
-    """Generate field-usage examples from the registry for the system prompt."""
-    examples = []
-    triggers = get_field_triggers(tool_name)
-
-    for keyword, triggered_fields in triggers.items():
-        if keyword in ["name", "id", "category"]:
-            continue
-        if len(triggered_fields) <= 2:
-            default = meta.get("default_fields", [])
-            all_fields = list(dict.fromkeys(default + triggered_fields))
-            examples.append(
-                f"{keyword}=>{tool_name}(fields={json.dumps(all_fields, ensure_ascii=False)})"
-            )
-
-    return examples
+    return f"{tool_name}={meta.get('category', '')}: {meta.get('description', '')}"
 
 def _get_recent_tool_calls(messages: list, max_calls: int = 3) -> list[dict]:
     """Return the most recent distinct tool calls from AIMessages, newest first."""
@@ -1086,17 +1088,11 @@ def build_system_prompt(
         "Never invent IDs, names, dates, or amounts.",
         "You MUST call at least one tool. Never answer in prose without a tool call.",
         "Do NOT output any thinking or reasoning — call the tool directly.",
-        "Set `fields` to only the columns the user explicitly asks for. "
-        'E.g. "sirf name" → fields=["name"]; "name and cgst" → fields=["name","cgst"]. '
-        "Omit `fields` if user doesn't specify any columns.",
         "",
         "FOLLOW-UP RULES:",
-        "- Reuse the search term and filters only if the new query is a follow-up about the same specific entity. If the topic or scope changes (e.g. switching to a different search or asking a general/broad question), clear them.",
-        "- When the user asks for additional fields (e.g. 'id' after previously asking for 'name'),",
-        "  KEEP the previous fields and ADD the new ones. Never remove previously requested fields.",
         "- If the answer is already in previous tool results, use it directly without a new API call.",
         "- When a tool has sort_field/sort_order parameters and the user asks for extreme/comparative values (highest, most, least, top, bottom, etc.), ALWAYS set sort_field to the field being compared and sort_order accordingly: 'desc' for highest/most/top, 'asc' for lowest/least/bottom.",
-        "- CRITICAL: When the current query requires a DIFFERENT tool than the previous one (e.g. switching from get_customer to get_stock_levels), you MUST clear ALL old search terms, filters, and parameters. Reuse parameters ONLY within the same tool.",
+        "- CRITICAL: When the current query requires a DIFFERENT tool than the previous one (e.g. switching from get_customer to get_stock_levels), you MUST clear ALL old search terms and parameters. Reuse parameters ONLY within the same tool.",
     ]
 
     check_query = f"{original_query} {user_query}" if original_query else user_query
@@ -1166,11 +1162,8 @@ def build_system_prompt(
     lines.append("  If a tool call returns empty results, do NOT hallucinate data. Report clearly: 'No records found for X.'")
     lines.append("  If the user asks about something from earlier that returned no data, acknowledge the prior failure.")
     lines.append("")
-    lines.append("PARAMETER RULES:")
-    lines.append("  1. Tools with `search`/`term`: put name/city/product lookups there, NEVER in `filters`.")
-    lines.append("  2. `filters` is for exact matches only: hsnCode, category, lowStockOnly, etc.")
-    lines.append("  3. Tools without `search`/`term` (gst_summary, tds, tcs): `filters` is correct usage.")
-    lines.append("  4. CRITICAL — NEVER copy parameters between different tools. Each tool has its own unique set of valid parameters. What works for one tool will NOT work for another.")
+    lines.append("PARAMETER RULE:")
+    lines.append("  NEVER copy parameters between different tools. Each tool has its own unique set of valid parameters.")
 
     return "\n".join(lines)
 
@@ -1335,164 +1328,10 @@ def extract_date_range_for_tool(query: str, date_keywords: list[str]) -> tuple[s
 
 
 def sanitize_tool_filters(name: str, args: dict) -> dict:
-    """Strip invalid filter keys from any tool call and move values to search/term param.
-    Uses TOOL_INTENT_REGISTRY fields as the set of valid filter keys.
-    Generic across all tools — zero config needed."""
-    meta = TOOL_INTENT_REGISTRY.get(name)
-    if not meta:
-        return args
-
-    filters = args.get("filters")
-    if not filters:
-        return args
-
-    valid_keys = set(meta.get("fields", []))
-    if not valid_keys:
-        return args
-
-    # ── Remap LLM-invented filter keys to real API fields using field_aliases ──
-    field_aliases = meta.get("field_aliases", {})
-    alias_to_real = {}
-    for real_field, aliases in field_aliases.items():
-        for alias in aliases:
-            alias_to_real[alias] = real_field
-    for k in list(filters.keys()):
-        if k not in valid_keys and k in alias_to_real:
-            filters[alias_to_real[k]] = filters.pop(k)
-
-    invalid = {}
-    for k in list(filters.keys()):
-        if k not in valid_keys:
-            invalid[k] = filters.pop(k)
-
-    if not invalid:
-        return args
-
-    # ── Entity salvage: inject stripped values into name-like filters ──
-    remaining = {}
-    for k, v in invalid.items():
-        if isinstance(v, str) and v.strip():
-            name_candidates = [
-                rf for rf, aliases in field_aliases.items()
-                if any(
-                    any(n in a.lower() for n in ("name", "customer", "vendor", "ledger", "party"))
-                    for a in aliases
-                )
-            ]
-            if name_candidates:
-                target = name_candidates[0]
-                if isinstance(filters, dict):
-                    filters.setdefault(target, {})
-                    if isinstance(filters[target], dict) and "contains" not in filters[target]:
-                        filters[target]["contains"] = v
-                        print(f"[SANITIZE] {name}: salvaged '{v}' -> filters.{target}.contains")
-                        continue
-        remaining[k] = v
-
-    if not filters:
-        del args["filters"]
-
-    terms = []
-    for k, v in remaining.items():
-        if isinstance(v, str):
-            terms.append(v)
-        elif isinstance(v, (list, tuple)):
-            terms.extend(str(t) for t in v)
-
-    if terms:
-        term_str = " ".join(terms)
-        for search_key in ("search", "term"):
-            if search_key in args:
-                current = args.get(search_key) or ""
-                if current:
-                    current += " "
-                args[search_key] = current + term_str
-                break
-
-    if remaining:
-        print(f"[SANITIZE] {name}: stripped invalid filter keys {list(remaining.keys())}")
-    if terms:
-        print(f"[SANITIZE] {name}: moved values to search: {' '.join(terms)}")
     return args
 
 
-def expand_customer_city_calls(base_name: str, base_args: dict, user_query: str) -> list[dict]:
-    """Create per-city get_customer calls when multiple known cities, or
-    filter by unknown location token when Nykaa + <unknown> is present."""
-    q_upper = (user_query or "").upper()
-    q_lower = (user_query or "").lower()
-    extra: list[dict] = []
 
-    if base_name != "get_customer":
-        return extra
-
-    if "NYKAA" not in q_upper:
-        return extra
-
-    matched_cities = [c for c in CITY_WORDS if c in q_upper]
-
-    if len(matched_cities) > 1:
-        for city in matched_cities:
-            city_args = dict(base_args)
-            city_args["filters"] = {"name": {"contains": city}}
-            extra.append({
-                "name": "get_customer",
-                "args": city_args,
-                "id": f"call_get_customer_{city.lower()}",
-                "type": "tool_call",
-            })
-        return extra
-
-    if not matched_cities and "NYKAA" in q_upper:
-        # Nykaa <unknown location> — prevent broad dump
-        after = q_upper.split("NYKAA", 1)[1]
-        tokens = re.findall(r"\b[A-Z]+\b", after)
-        unknown = next((t for t in tokens if t not in STOP_TOKENS), None)
-        if unknown:
-            filtered_args = dict(base_args)
-            filtered_args["filters"] = {"name": {"contains": unknown}}
-            extra.append({
-                "name": "get_customer",
-                "args": filtered_args,
-                "id": f"call_get_customer_{unknown.lower()}",
-                "type": "tool_call",
-            })
-            return extra
-
-    return extra
-
-
-def expand_multi_identifier_calls(base_name: str, base_args: dict, user_query: str) -> list[dict]:
-    """When a stock query has HSN filter but the query also mentions id <number>,
-    create a second call for the id filter. E.g. '49090090 aur id 349' needs both."""
-    extra: list[dict] = []
-
-    if base_name != "get_stock_levels":
-        return extra
-
-    q_lower = (user_query or "").lower()
-
-    # Check if the original call already has an HSN filter
-    filters = base_args.get("filters") or {}
-    has_hsn = "hsnCode" in filters
-
-    # Check if query also mentions an id
-    id_match = re.search(r"\bid\s*[:#-]?\s*(\d+)\b", q_lower)
-
-    if has_hsn and id_match:
-        product_id = int(id_match.group(1))
-        # Create a separate call for the id
-        id_args = dict(base_args)
-        id_args["filters"] = {"id": product_id}
-        id_args.pop("term", None)
-        extra.append({
-            "name": "get_stock_levels",
-            "args": id_args,
-            "id": "call_get_stock_levels_by_id",
-            "type": "tool_call",
-        })
-
-    return extra
 
 
 @traceable(name="chat_model_node", run_type="llm")
@@ -1856,6 +1695,7 @@ async def chat_model_node(state: MainState):
         covered_domains = set()
         for tn in called_names:
             covered_domains |= set(TOOL_DOMAINS.get(tn, []))
+        combined_q = (f"{original_query or ''} {state.get('canonical_query', '') or ''}").lower()
         for tn in selected_tools:
             if tn not in called_names:
                 td = set(TOOL_DOMAINS.get(tn, []))
@@ -1867,6 +1707,13 @@ async def chat_model_node(state: MainState):
                 if td and covered_domains and td & covered_domains:
                     print(f"[FORCE-INJECT] Skipping {tn} (domain {td} already covered by {covered_domains})")
                     continue
+                # Skip when no hard domains detected AND the query has no keyword match for this tool
+                if not all_part_domains:
+                    meta = TOOL_INTENT_REGISTRY.get(tn, {})
+                    all_kw = set(meta.get("keywords", [])) | set(meta.get("aliases", []))
+                    if not any(kw in combined_q for kw in all_kw):
+                        print(f"[FORCE-INJECT] Skipping {tn} (no domain match and no keyword overlap with query)")
+                        continue
                 all_raw_calls.append({
                     "name": tn,
                     "args": {},
@@ -1886,52 +1733,17 @@ async def chat_model_node(state: MainState):
             repair = meta.get("repair")
 
             if not repair:
-                return {
-                    "name": name,
-                    "args": args,
-                }
+                return {"name": name, "args": args}
 
             combined_q = f"{original_query or ''} {state.get('canonical_query', '') or ''}".lower()
 
-            if args:
-                flds = args.get("fields")
-                if isinstance(flds, dict):
-                    from src.tools_api import normalize_fields
-                    args["fields"] = normalize_fields(flds)
-                elif isinstance(flds, str):
-                    args["fields"] = [f.strip() for f in flds.split(",") if f.strip()]
-
-                # If LLM sent no fields, build from query triggers only (no force-added extras).
-                # Use meta-level default_fields (not repair-level — repair is the sub-dict).
-                # If LLM sent fields, merge with default + always_include to prevent data loss.
-                llm_fields = args.get("fields")
-                defaults = list(meta.get("default_fields", repair.get("default_fields", [])))
-                always = list(meta.get("always_include_fields", []))
-                if not llm_fields:
-                    args["fields"] = defaults
-                else:
-                    merged = list(dict.fromkeys(defaults + always + llm_fields))
-                    args["fields"] = merged
-
-                # Clear term if it looks like a filter expression, not a product name
-                term = args.get("term")
-                if term and isinstance(term, str):
-                    if re.search(r"\b(lt|gt|lte|gte|eq|ne|in|\$lt|\$gt)\b|(?:<=|>=|!=)", term):
-                        args["term"] = ""
-
             worker_has = {}
-
             if args:
                 for dk in ("from_date", "to_date"):
                     v = args.get(dk)
-
                     if v and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(v)):
                         worker_has[dk] = v
 
-            # Discard hallucinated dates: if LLM provided dates but neither the query
-            # nor the conversation summary has a date reference, they are invented.
-            # Also check recent tool call context — follow-ups often reuse dates
-            # from previous calls without mentioning them in the query text.
             summary_text = state.get("summary", "") or ""
             messages_list = state.get("messages", [])
             recent_tool_dates = ""
@@ -1948,12 +1760,10 @@ async def chat_model_node(state: MainState):
             if worker_has and not re.search(r"\d{4}-\d{2}-\d{2}|\b\d{4}\b", combined_q + " " + summary_text + recent_tool_dates):
                 worker_has = {}
 
-            # Preserve worker's explicit non-standard params before overwrite.
-            # Exclude category/categories — category_map + category_to_filter handle them.
             worker_extra = {}
             if repair.get("overwrite") and args:
                 for k, v in args.items():
-                    if k not in ("from_date", "to_date", "fields", "category", "categories") and v is not None:
+                    if k not in ("from_date", "to_date") and v is not None:
                         worker_extra[k] = v
 
             new_args = (
@@ -1962,7 +1772,6 @@ async def chat_model_node(state: MainState):
                 else dict(args or {})
             )
 
-            # Preserve worker's valid dates
             for dk, dv in worker_has.items():
                 new_args[dk] = dv
 
@@ -1970,168 +1779,34 @@ async def chat_model_node(state: MainState):
                 if kw.lower() in combined_q:
                     new_args.update(kwar)
 
-            city_cfg = repair.get("city_filter")
-
-            if city_cfg:
-                matched = [
-                    c for c in CITY_WORDS
-                    if c in combined_q.upper()
-                ]
-
-                if len(matched) == 1:
-                    new_args["filters"] = {
-                        city_cfg.get("key", "name"): {
-                            "contains": matched[0]
-                        }
-                    }
-
-            if repair.get("hsn_extract"):
-                hsn_match = re.search(r"\b(\d{8})\b", combined_q)
-
-                if hsn_match:
-                    hsn = hsn_match.group(1)
-
-                    # Try labeled format first: "name: XYZ" or "product: XYZ"
-                    name_match = re.search(
-                        r"(?:name|product|item|naam)[:\s]+(.+?)(?:\s+(?:hsn|closing|stock|qty|quantity)|\s*$)",
-                        combined_q,
-                        re.IGNORECASE
-                    )
-                    product_name = name_match.group(1).strip() if name_match else None
-
-                    # Only use product_name if it looks clean (no question words, max ~5 words)
-                    if product_name and (
-                        re.search(r"\b(kya|hai|batao|dikhao|show|what|is|the)\b", product_name, re.IGNORECASE)
-                        or len(product_name.split()) > 5
-                    ):
-                        product_name = None
-
-                    new_args["term"] = product_name or hsn
-                    new_args["filters"] = {
-                        "hsnCode": hsn
-                    }
-
-                    if product_name:
-                        new_args["filters"]["name"] = {"contains": product_name}
-
-                    fields = list(
-                        repair.get(
-                            "default_fields",
-                            ["name", "id", "hsnCode", "closingQty"]
-                        )
-                    )
-
-                    all_triggers = get_field_triggers(name)
-
-                    for kw, triggered_fields in all_triggers.items():
-                        match_found = (
-                            kw in combined_q
-                            if " " in kw
-                            else bool(re.search(rf"\b{re.escape(kw)}\b", combined_q))
-                        )
-
-                        if match_found:
-                            for fld in triggered_fields:
-                                if fld not in fields:
-                                    fields.append(fld)
-
-                    new_args["fields"] = fields
-
-                    return {
-                        "name": name,
-                        "args": new_args,
-                    }
-
-            cat_map = repair.get("category_map", {})
-
-            if cat_map:
-                matched = []
-
-                for kw, val in cat_map.items():
-                    if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", combined_q):
-                        matched.append(val)
-
-                # Remove generic parent when a specific child also matched.
-                # E.g., "b2c" + "b2c small" → keep only "b2c small".
-                # Only remove when parent val differs from child val
-                # (e.g., "b2c"→"b2cLarge" + "b2c large"→"b2cLarge": same val, keep it).
-                for kw in list(cat_map):
-                    if " " in kw:
-                        parent = kw.split(" ")[0]
-                        pv = cat_map.get(parent)
-                        cv = cat_map[kw]
-                        if pv and pv in matched and cv in matched and pv != cv:
-                            matched.remove(pv)
-
-                # Generic prefix expansion: if a single-word keyword is a prefix of
-                # multi-word keywords (e.g., "b2c" → "b2c small" + "b2c large"),
-                # include all sub-variants when query matches only the parent word.
-                prefix_kws = {}
-                for kw in cat_map:
-                    if " " in kw:
-                        first = kw.split(" ")[0]
-                        prefix_kws.setdefault(first, []).append(kw)
-                for parent, children in prefix_kws.items():
-                    if parent not in cat_map:
-                        continue
-                    parent_val = cat_map[parent]
-                    if parent_val not in matched:
-                        continue
-                    has_specific = any(c in combined_q for c in children)
-                    if not has_specific:
-                        matched.remove(parent_val)
-                        for child in children:
-                            cv = cat_map[child]
-                            if cv not in matched:
-                                matched.append(cv)
-
-                if len(matched) == 1:
-                    new_args["category"] = matched[0]
-                    new_args.pop("categories", None)
-
-                elif len(matched) > 1:
-                    new_args["categories"] = matched
-                    new_args.pop("category", None)
-
             if repair.get("extract_customer_id"):
                 cm = re.search(r"(?:customer|party|client)\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)", combined_q)
-
                 if cm:
                     new_args["customer_id"] = int(cm.group(1))
 
             date_kws = repair.get("date_keywords")
-
-            if date_kws and (
-                not new_args.get("from_date")
-                or not new_args.get("to_date")
-            ):
+            if date_kws and (not new_args.get("from_date") or not new_args.get("to_date")):
                 f, t = extract_date_range_for_tool(combined_q, date_kws)
-
                 if f:
                     new_args["from_date"] = f
                     new_args["to_date"] = t
-
-            if repair.get("remove_filters"):
-                new_args.pop("filters", None)
 
             low_stock_kws = repair.get("low_stock_only_keywords")
             if low_stock_kws and new_args.get("low_stock_only") is True:
                 if not any(kw in combined_q for kw in low_stock_kws):
                     new_args["low_stock_only"] = False
 
-            # Auto-extract customer ID number for get_customer tool (e.g. "customer 76" -> search="76")
             if name == "get_customer":
                 cust_num = re.search(r"(?:customer|party|client)\s*(?:number|no|#)?\s*:?\s*(\d+)", combined_q)
                 if cust_num and not new_args.get("search"):
                     new_args["search"] = cust_num.group(1)
 
-            # Auto-inject invoice number filter for invoice tools
             INVOICE_TOOLS = {"get_overdue_invoices", "get_outstanding_sales_invoices", "get_outstanding_purchase_invoices"}
             if name in INVOICE_TOOLS:
                 inv_patterns = [
-                    r'[A-Z]{2,5}/\d{2,4}[-/]\d{2,4}/\d{2,5}',  # AI/22-23/050
-                    r'\b[A-Z]{2,5}-\d{2,5}\b',                   # PR-52
-                    r'\d{3,5}[-/]\d{7,10}[-/]\d{7,10}',         # 171-2645423-3220305
+                    r'[A-Z]{2,5}/\d{2,4}[-/]\d{2,4}/\d{2,5}',
+                    r'\b[A-Z]{2,5}-\d{2,5}\b',
+                    r'\d{3,5}[-/]\d{7,10}[-/]\d{7,10}',
                 ]
                 all_matches = []
                 for pat in inv_patterns:
@@ -2148,404 +1823,75 @@ async def chat_model_node(state: MainState):
                             inv_filters["invoiceNo"] = all_matches
                     new_args["filters"] = inv_filters
 
-            # Auto-inject ledger/customer name filter for invoice & ledger tools
-            LEDGER_FIELDS = {"ledgerName", "ledger", "customerName", "vendor", "supplier", "party"}
-            tool_fields = set(meta.get("fields", []))
-            if tool_fields & LEDGER_FIELDS:
-                existing_filters = new_args.get("filters") or {}
-                already_has_ledger = any(
-                    k in existing_filters for k in ("ledgerName", "ledger", "customerName", "vendor")
-                )
-                if not already_has_ledger:
-                    raw_queries = [q for q in [state.get("canonical_query", ""), state.get("original_query", ""), user_query] if q]
-                    name_candidates = set()
-                    for raw_q in raw_queries:
-                        for m in re.finditer(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+', raw_q):
-                            candidate = m.group(0)
-                            if not re.search(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|From|To|Show|List|Get|Fetch|Find|Search|Total|All|Sales|Purchase|Invoice|Overdue|Current|Aging|Balance|Summary|Amount|Type|Date|Name|Number|Code|Value)\b', candidate):
-                                name_candidates.add(candidate)
-                        for m in re.finditer(r'[A-Z][a-z]+\s*&\s*[A-Z][a-z]+', raw_q):
-                            name_candidates.add(m.group(0))
-                    if name_candidates:
-                        best_name = max(name_candidates, key=len)
-                        inv_filters = new_args.get("filters") or {}
-                        if not isinstance(inv_filters, dict):
-                            inv_filters = {}
-                        inv_filters.setdefault("ledgerName", {"contains": best_name})
-                        new_args["filters"] = inv_filters
-                        print(f"[AUTO-INJECT] {name}: injected ledgerName contains '{best_name}'")
+            if name in INVOICE_TOOLS:
+                raw_queries = [q for q in [state.get("canonical_query", ""), state.get("original_query", ""), user_query] if q]
+                name_candidates = set()
+                for raw_q in raw_queries:
+                    for m in re.finditer(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+', raw_q):
+                        candidate = m.group(0)
+                        if not re.search(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|From|To|Show|List|Get|Fetch|Find|Search|Total|All|Sales|Purchase|Invoice|Overdue|Current|Aging|Balance|Summary|Amount|Type|Date|Name|Number|Code|Value)\b', candidate):
+                            name_candidates.add(candidate)
+                    for m in re.finditer(r'[A-Z][a-z]+\s*&\s*[A-Z][a-z]+', raw_q):
+                        name_candidates.add(m.group(0))
+                if name_candidates:
+                    best_name = max(name_candidates, key=len)
+                    inv_filters = new_args.get("filters") or {}
+                    if not isinstance(inv_filters, dict):
+                        inv_filters = {}
+                    inv_filters.setdefault("ledgerName", {"contains": best_name})
+                    new_args["filters"] = inv_filters
+                    print(f"[AUTO-INJECT] {name}: injected ledgerName contains '{best_name}'")
 
-            # Auto-inject TDS section filter
             if name == "get_tds_outstanding":
                 section_match = re.search(r'\b(194[A-J])\b', combined_q)
                 if section_match:
-                    tds_filters = new_args.get("filters") or {}
-                    if not isinstance(tds_filters, dict):
-                        tds_filters = {}
-                    tds_filters["section"] = section_match.group(1)
-                    new_args["filters"] = tds_filters
+                    existing = new_args.get("filters") or {}
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    existing.setdefault("section", section_match.group(1))
+                    new_args["filters"] = existing
 
-            # Auto-inject TCS section filter
             if name == "get_tcs_outstanding":
                 if re.search(r'\b206C\b', combined_q):
-                    tcs_filters = new_args.get("filters") or {}
-                    if not isinstance(tcs_filters, dict):
-                        tcs_filters = {}
-                    tcs_filters["section"] = "206C"
-                    new_args["filters"] = tcs_filters
+                    existing = new_args.get("filters") or {}
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    existing.setdefault("section", "206C")
+                    new_args["filters"] = existing
 
-            # Generic value-comparison filter: detect "negative <field>",
-            # "less than 0" / "0 se kam" / "< 0" with a field keyword → {field: {lt: 0}}.
-            # And "positive" / "greater than 0" / "more than 0" / "0 se jyada" → {field: {gt: 0}}.
-            # Applies to fields that look numeric (contain Qty/Value/Rate/Amount/Balance/Count/Gst/St).
-            # Generic numeric threshold: "N se jada/kam", "N se upar/less"
-            num_compare = None
-            compare_op = None
-            num_m = re.search(r"(\d+(?:\.\d+)?)\s+se\s+(jyada|jada|zada|upar|kam|less|km)\b", combined_q, re.IGNORECASE)
-            if num_m:
-                num_compare = float(num_m.group(1))
-                compare_op = "gt" if num_m.group(2).lower() in ("jyada", "jada", "upar", "zada") else "lt"
-            is_lt_zero = not num_m and bool(re.search(
-                r"\bnegative\b|\bless\s+th[ae]n\s+0\b|<\s*0\b|\bbelow\s+0\b|0\s+se\s+kam\b",
-                combined_q,
-            ))
-            is_gt_zero = not num_m and bool(re.search(
-                r"\bpositive\b|\bgreater\s+th[ae]n\s+0\b|\bmore\s+th[ae]n\s+0\b|>\s*0\b|\babove\s+0\b|0\s+se\s+jyada\b|0\s+se\s+upar\b",
-                combined_q,
-            ))
-            if is_lt_zero or is_gt_zero or (num_compare is not None and compare_op):
-                operator = compare_op or ("gt" if is_gt_zero else "lt")
-                threshold = num_compare if num_compare is not None else 0
-                for field, aliases in TOOL_INTENT_REGISTRY.get(name, {}).get("field_aliases", {}).items():
-                    if not re.search(r"(Qty|Value|Rate|Amount|Balance|Count|gst|igst|cgst|sgst|cess)", field, re.IGNORECASE):
-                        continue
-                    for alias in aliases:
-                        if (" " in alias and alias in combined_q) or re.search(rf"\b{re.escape(alias)}\b", combined_q):
-                            new_args.setdefault("filters", {})[field] = {operator: threshold}
-                            break
-
-            # Normalize malformed filter keys: LLM sometimes sends
-            # "closingQty gt": "2" (space) or "name.contains": "Bangalore" (dot)
-            # instead of the correct nested format {"closingQty": {"gt": 2}}.
-            norm_filters = new_args.get("filters")
-            if norm_filters and isinstance(norm_filters, dict):
-                _ops = {"gt", "gte", "lt", "lte", "eq", "ne", "contains", "in"}
-                for raw_key in list(norm_filters):
-                    norm_key = raw_key.replace(".", " ").strip()
-                    if " " in norm_key:
-                        parts = norm_key.rsplit(" ", 1)
-                        if len(parts) == 2 and parts[1] in _ops:
-                            field_name, operator = parts
-                            raw_val = norm_filters.pop(raw_key)
-                            try:
-                                raw_val = float(raw_val)
-                            except (TypeError, ValueError):
-                                pass
-                            existing = norm_filters.setdefault(field_name, {})
-                            if isinstance(existing, dict):
-                                existing[operator] = raw_val
-                            # If existing is a primitive, that's a conflict — skip.
-
-            for f in repair.get("prepend_fields", []):
-                fields = new_args.setdefault("fields", [])
-
-                if f not in fields:
-                    fields.insert(0, f)
-
-            strip = repair.get("strip_fields")
-
-            if strip:
-                fields = list(new_args.get("fields") or [])
-                new_args["fields"] = [
-                    f for f in fields
-                    if f not in strip
-                ]
-
-            fixed = repair.get("fixed_fields")
-
-            if fixed is not None:
-                new_args["fields"] = list(
-                    repair.get("default_fields", fixed)
-                )
-
-            for f in repair.get("ensure_fields", []):
-                if f not in new_args.get("fields", []):
-                    new_args.setdefault("fields", []).append(f)
-
-            # Build the field list.
-            # When LLM explicitly sent fields, use those as starting point.
-            # Otherwise, fall back to default_fields.
-            # When overwrite=True with base_args.fields, use base_args as source.
-            # Then apply curated field_triggers as a safety net for fields the
-            # user asked for but LLM missed. Skip triggers when query has
-            # "sirf"/"only"/"just"/"bas" (user wants ONLY those fields).
-            llm_sent_fields = "fields" in args
-            if repair.get("overwrite") and "fields" in (repair.get("base_args") or {}):
-                fields = list(repair["base_args"]["fields"])
-            elif llm_sent_fields:
-                fields = list(args.get("fields") or [])
-            else:
-                fields = list(repair.get("default_fields") or [])
-            for kw, fld in repair.get("field_triggers", {}).items():
-                match = kw in combined_q if " " in kw else bool(re.search(rf'\b{re.escape(kw)}\b', combined_q))
-                if match and fld not in fields:
-                    fields.append(fld)
-            if fields:
-                new_args["fields"] = fields
-
-            # Ensure always_include_fields from tool meta are never lost
-            always_meta = list(TOOL_INTENT_REGISTRY.get(name, {}).get("always_include_fields", []))
-            for af in always_meta:
-                if af not in new_args.get("fields", []):
-                    new_args.setdefault("fields", []).append(af)
-
-            strict_kws = repair.get("strict_field_keywords", {})
-
-            if strict_kws:
-                for kw_exact, narrow_fields in strict_kws.items():
-                    if kw_exact in combined_q:
-                        new_args["fields"] = list(narrow_fields)
-                        break
-
-            if "fields" in new_args and isinstance(new_args["fields"], list):
-                flds = new_args["fields"]
-
-                if "closingQuantity" in flds:
-                    flds[flds.index("closingQuantity")] = "closingQty"
-
-                # Remap LLM-invented field names to real API fields using field_aliases
-                field_aliases = meta.get("field_aliases", {})
-                alias_to_real = {}
-                for real_field, aliases in field_aliases.items():
-                    for alias in aliases:
-                        alias_to_real[alias] = real_field
-                for i, f in enumerate(flds):
-                    if f not in field_aliases and f in alias_to_real:
-                        flds[i] = alias_to_real[f]
-
-            # ── Also remap filter keys in new_args via same alias lookup ──
-            flds_dict = new_args.get("filters")
-            if flds_dict and isinstance(flds_dict, dict):
-                for k in list(flds_dict.keys()):
-                    if k not in field_aliases and k in alias_to_real:
-                        flds_dict[alias_to_real[k]] = flds_dict.pop(k)
-
-            # Merge back worker's explicit non-standard args that repair didn't set
-            for k, v in worker_extra.items():
-                if k not in new_args or new_args.get(k) in (None, "", []):
-                    new_args[k] = v
-
-            # Apply param_aliases from repair config (e.g., "name" → "term", "name" → "search")
             param_aliases = repair.get("param_aliases", {})
             for llm_arg, real_param in param_aliases.items():
                 if llm_arg in new_args and real_param not in new_args:
                     new_args[real_param] = new_args.pop(llm_arg)
 
-            # Convert category to filters when repair config says so.
-            # Use "category" (singular) as the filter key to match flattened
-            # GST-summary record fields — the API receives this verbatim but
-            # doesn't actually filter server-side for GST summary.
-            if repair.get("category_to_filter"):
-                cat_val = None
-                for cat_key in ("category", "categories"):
-                    if cat_key in new_args:
-                        cat_val = new_args.pop(cat_key)
-                        break
-                if cat_val:
-                    if isinstance(cat_val, list):
-                        new_args.setdefault("filters", {})["category"] = ",".join(cat_val)
-                    else:
-                        new_args.setdefault("filters", {})["category"] = cat_val
+            for k, v in worker_extra.items():
+                if k not in new_args or new_args.get(k) in (None, "", []):
+                    new_args[k] = v
 
-            if name == "get_gst_summary" or name in (
-                "get_tds_outstanding",
-                "get_tcs_outstanding",
-            ):
-                print(f"[{name.upper()} FINAL ARGS] {json.dumps(new_args, default=str)}")
-
-            # ──────────────────────────────────────────────────
-            # Generic cross-tool corrections (applied to all tools)
-            # ──────────────────────────────────────────────────
-
-            # 1. Singular min/max query → limit=1.
-            # "sabse kam/jyada X", "least/most/lowest/highest X".
-            # Does not fire when query has an explicit count ("top 3", "first 5").
-            if (
-                re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum)\b', combined_q)
-                and not re.search(r'\b(top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q)
-            ):
+            if re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum)\b', combined_q) and not re.search(r'\b(top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q):
                 if "limit" not in new_args or new_args.get("limit", 10) > 5:
                     new_args["limit"] = 1
 
-            # 2. "Which entity?" query → ensure name field in results.
-            # Patterns: "kis product ka", "kaunsa customer", "which party", etc.
-            if re.search(r'\b(kis|kaunsa|kaun\s*sa|which)\s+(product|customer|party|item|entity)s?\b', combined_q):
-                flds = new_args.get("fields", [])
-                if flds and "name" not in flds:
-                    flds.insert(0, "name")
-                    new_args["fields"] = flds
+            if name == "get_gst_summary" or name in ("get_tds_outstanding", "get_tcs_outstanding"):
+                print(f"[{name.upper()} FINAL ARGS] {json.dumps(new_args, default=str)}")
 
-            return {
-                "name": name,
-                "args": new_args,
-            }
-
-        def _generic_validate_tool_args(name: str, args: dict) -> dict:
-            """Post-repair generic validation for ALL tools.
-            1) Strips top-level params not in the function signature
-            2) Resets hallucinated sort/order/metric/category params to defaults
-            3) Salvages stripped values into name-like filters via field_aliases
-            """
-            from src.tools_api import tools_dict as _tools_dict
-            tool_obj = _tools_dict.get(name)
-            if not tool_obj:
-                return args
-
-            meta = TOOL_INTENT_REGISTRY.get(name, {})
-            field_aliases = meta.get("field_aliases", {})
-            combined_q = f"{original_query or ''} {state.get('canonical_query', '') or ''}".lower()
-
-            alias_to_real = {}
-            for real_field, aliases in field_aliases.items():
-                for alias in aliases:
-                    alias_to_real[alias.lower()] = real_field
-                alias_to_real[real_field.lower()] = real_field
-
-            valid_params = set(tool_obj.args.keys())
-
-            stripped_extra = {}
-            for k in list(args.keys()):
-                if k not in valid_params:
-                    stripped_extra[k] = args.pop(k)
-
-            ENUM_HINTS = ("sort", "order", "metric", "category", "type")
-            for k in list(args.keys()):
-                if not any(hint in k.lower() for hint in ENUM_HINTS):
-                    continue
-                v = args.get(k)
-                if not isinstance(v, str) or not v.strip():
-                    continue
-                v_lower = v.strip().lower()
-                if v_lower in alias_to_real:
-                    continue
-                schema = tool_obj.args.get(k, {})
-                if isinstance(schema, dict):
-                    default_val = schema.get("default")
-                    if default_val is not None:
-                        old_val = args[k]
-                        args[k] = default_val
-                        print(f"[GENERIC VALIDATE] {name}: reset {k} from '{old_val}' to '{default_val}'")
-
-            salvage_values = []
-            for k, v in stripped_extra.items():
-                if isinstance(v, str) and v.strip():
-                    salvage_values.append(v)
-                elif isinstance(v, (list, tuple)):
-                    salvage_values.extend(str(x) for x in v if isinstance(x, str))
-
-            if salvage_values:
-                text = " ".join(salvage_values)
-                name_candidates = [
-                    rf for rf, aliases in field_aliases.items()
-                    if any(
-                        any(n in a.lower() for n in ("name", "customer", "vendor", "ledger", "party"))
-                        for a in aliases
-                    )
-                ]
-                if name_candidates:
-                    filters = args.get("filters")
-                    if not isinstance(filters, dict):
-                        filters = {}
-                        args["filters"] = filters
-                    target = name_candidates[0]
-                    if target not in filters or not isinstance(filters.get(target), dict):
-                        filters[target] = {"contains": text}
-                    elif isinstance(filters[target], dict) and "contains" not in filters[target]:
-                        filters[target]["contains"] = text
-
-            return args
-
-        def _check_tool_alignment(name: str, combined_q: str, already_called: set | None = None) -> str | None:
-            """Check if a different selected tool better matches the query's
-            field_alias tokens. Returns better tool name or None.
-            Skips tools already in the current batch (already_called)."""
-            already_called = already_called or set()
-            # Build excluded tools based on invoice patterns
-            excluded = set(already_called)
-            for domain, patterns in INVOICE_PATTERNS.items():
-                if any(re.search(p, combined_q, re.IGNORECASE) for p in patterns):
-                    for tn in selected_tools:
-                        td = TOOL_DOMAINS.get(tn, [])
-                        if td and domain not in td:
-                            excluded.add(tn)
-            def _get_tool_tokens(tool_name: str) -> set[str]:
-                m = TOOL_INTENT_REGISTRY.get(tool_name, {})
-                fa = m.get("field_aliases", {})
-                tokens = set()
-                for real_field, aliases in fa.items():
-                    tokens.add(real_field.lower())
-                    for a in aliases:
-                        tokens.update(a.lower().split())
-                return tokens
-
-            qtokens = set(re.findall(r'\w+', combined_q))
-            current_score = len(qtokens & _get_tool_tokens(name))
-
-            best_tool = name
-            best_score = current_score
-            for tn in selected_tools:
-                if tn == name or tn not in tools_dict:
-                    continue
-                if tn in excluded:
-                    continue
-                ts = len(qtokens & _get_tool_tokens(tn))
-                if ts >= current_score + 1 and ts > best_score:
-                    best_score = ts
-                    best_tool = tn
-
-            if best_tool != name:
-                orig_domains = set(TOOL_DOMAINS.get(name, []))
-                better_domains = set(TOOL_DOMAINS.get(best_tool, []))
-                if orig_domains and better_domains and not orig_domains & better_domains:
-                    print(f"[TOOL ALIGNMENT] blocked: {name} ({orig_domains}) -> {best_tool} ({better_domains}) - cross-domain")
-                    return None
-                print(f"[TOOL ALIGNMENT] {name} (score={current_score}) -> {best_tool} (score={best_score}) query: {combined_q}")
-                return best_tool
-            return None
+            return {"name": name, "args": new_args}
 
         def _repair_tool_call(name: str, args: dict) -> dict | None:
             name = TOOL_NAME_ALIASES.get(name, name)
-
             if name not in tools_dict:
                 return None
 
             for alias, canonical in [
-                ("date_from", "from_date"),
-                ("date_to", "to_date"),
-                ("startDate", "from_date"),
-                ("endDate", "to_date"),
-                ("fromDate", "from_date"),
-                ("toDate", "to_date"),
-                ("start_date", "from_date"),
-                ("end_date", "to_date"),
+                ("date_from", "from_date"), ("date_to", "to_date"),
+                ("startDate", "from_date"), ("endDate", "to_date"),
+                ("fromDate", "from_date"), ("toDate", "to_date"),
+                ("start_date", "from_date"), ("end_date", "to_date"),
             ]:
                 if alias in args and canonical not in args:
                     args[canonical] = args.pop(alias)
 
-            result = _apply_repair(name, args, original_query)
-            if result:
-                result["args"] = _generic_validate_tool_args(result["name"], result["args"])
-                combined_q = f"{original_query or ''} {state.get('canonical_query', '') or ''}".lower()
-                already_called = {tc.get("name") for tc in tool_calls} if tool_calls else set()
-                # Don't redirect if the original tool already has query-specific args
-                has_query_args = bool(result["args"].get("search") or result["args"].get("term") or result["args"].get("filters"))
-                better = _check_tool_alignment(result["name"], combined_q, already_called) if not has_query_args else None
-                if better:
-                    preserved = {k: result["args"][k] for k in ("limit", "page") if k in result["args"]}
-                    result = _apply_repair(better, preserved, original_query)
-                    if result:
-                        result["args"] = _generic_validate_tool_args(result["name"], result["args"])
-            return result
+            return _apply_repair(name, args, original_query)
 
         # Process bind_tools output — raw_tool_calls from bind_tools is already structured
         for call in raw_tool_calls:
@@ -2580,30 +1926,7 @@ async def chat_model_node(state: MainState):
             print(f"[DEDUP] tool_calls: {len(tool_calls)} -> {len(deduped)}")
             tool_calls = list(deduped.values())
 
-        # Expand multi-city customer calls and unknown-location filters
-        expanded = []
-
-        for call in tool_calls:
-            extra = expand_customer_city_calls(
-                call["name"],
-                call["args"],
-                original_query,
-            )
-
-            if extra:
-                expanded.extend(extra)
-            else:
-                expanded.append(call)
-                multi_id_extra = expand_multi_identifier_calls(
-                    call["name"],
-                    call["args"],
-                    original_query,
-                )
-                expanded.extend(multi_id_extra)
-
-        tool_calls = expanded
-
-        # Generic filter sanitization: strip invalid filter keys, move to search/term
+        # Generic filter sanitization: strip invalid filter keys
         sanitized = [call for call in tool_calls if sanitize_tool_filters(call["name"], call["args"]) is not None]
         tool_calls = sanitized
 
@@ -2883,13 +2206,6 @@ def apply_final_postprocessing(
             final_data[tool_name] = deduped
 
     return final_data
-def infer_requested_fields(user_query: str, tool_name: str) -> list[str]:
-    """
-    Fallback projection only. Normal projection should come from tool args.
-    Uses TOOL_INTENT_REGISTRY as single source of truth.
-    """
-    return infer_requested_fields_from_registry(user_query, tool_name)
-
 
 def compact_transactions(records: list[dict]) -> list[dict]:
     """
@@ -2924,32 +2240,19 @@ def compact_transactions(records: list[dict]) -> list[dict]:
 
     return compacted_records
 
-def project_records_by_fields(records: list, fields: list[str]) -> list:
-    if not fields:
-        return records
-
-    projected = []
-
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-
-        row = {}
-        for field in fields:
-            if field in record:
-                row[field] = record[field]
-
-        if row:
-            projected.append(row)
-
-    return projected
-
+GST_CATEGORY_KEYWORDS = {
+    "b2b": ["b2b"],
+    "b2cSmall": ["b2c small", "b2csmall"],
+    "b2cLarge": ["b2c large", "b2clarge"],
+    "nilRated": ["nil rated", "nilrated", "nill rated", "nillrated"],
+    "exempt": ["exempt"],
+    "exports": ["export", "exports"],
+    "creditNotesRegistered": ["creditnotesregistered", "credit note registered", "creditnoteregistered"],
+    "creditNotesUnregistered": ["creditnotesunregistered", "credit note unregistered", "creditnoteunregistered"],
+    "grandTotal": ["grand total", "total gst", "gst total", "grandtotal"],
+}
 
 def requested_gst_categories(query: str) -> list[str]:
-    """
-    Infer requested GST rows from the user query.
-    Uses the GST category_map from TOOL_INTENT_REGISTRY — no hardcoded category names.
-    """
     q = normalize_text(query)
     categories: list[str] = []
 
@@ -2957,48 +2260,16 @@ def requested_gst_categories(query: str) -> list[str]:
         if category not in categories:
             categories.append(category)
 
-    gst_meta = TOOL_INTENT_REGISTRY.get("get_gst_summary", {})
-    cat_map = gst_meta.get("repair", {}).get("category_map", {})
+    for cat_val, kws in GST_CATEGORY_KEYWORDS.items():
+        for kw in kws:
+            if kw in q:
+                add(cat_val)
+                break
 
-    # Match each category_map keyword against the query
-    for kw, val in cat_map.items():
-        if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", q):
-            add(val)
-
-    # Generic prefix expansion: if a single-word keyword is a prefix of
-    # multi-word keywords (e.g., "b2c" → "b2c small" + "b2c large"),
-    # include all sub-variants when query matches only the parent word.
-    # This mirrors the same logic in _apply_repair — no hardcoded category names.
-    prefix_kws = {}
-    for kw in cat_map:
-        if " " in kw:
-            first = kw.split(" ")[0]
-            prefix_kws.setdefault(first, []).append(kw)
-    for parent, children in prefix_kws.items():
-        if parent not in cat_map:
-            continue
-        parent_val = cat_map[parent]
-        if parent_val not in categories:
-            continue
-        has_specific = any(c in q for c in children)
-        if not has_specific:
-            for child in children:
-                cv = cat_map[child]
-                if cv not in categories:
-                    categories.append(cv)
-
-    # Additional keyword checks not in category_map
-    if "export" in q or "exports" in q:
-        add("exports")
-
-    if "creditnotesregistered" in q or ("credit" in q and "registered" in q):
-        add("creditNotesRegistered")
-
-    if "creditnotesunregistered" in q or ("credit" in q and "unregistered" in q):
-        add("creditNotesUnregistered")
-
-    if "grand total" in q or "total gst" in q or "gst total" in q:
-        add("grandTotal")
+    if "b2c" in q and "b2cSmall" not in categories and "b2cLarge" not in categories:
+        if not any(c.lower() in ("b2csmall", "b2clarge") for c in categories):
+            add("b2cSmall")
+            add("b2cLarge")
 
     return categories
 
@@ -3355,9 +2626,13 @@ async def response_generation_node(state: MainState):
         "- Vary your phrasing. Don't repeat the same sentence patterns.\n"
         "- If the user used Hinglish/Hindi, mirror their language and tone.\n"
         "- Never say 'As an AI' or 'As a language model' — just be helpful.\n"
-        "- End with an inviting tone when appropriate (e.g., 'Kuch aur?', 'Anything else?').\n"
+        "- Only end with a question (like 'Kuch aur?' or 'Anything else?') if the user's query itself ended with a question mark ('?'). Otherwise end with '.'.\n"
         "- If the user asks about something you already covered earlier, "
         "refer back naturally: 'Jaisa aapne pehle pucha tha...'\n"
+        "\n"
+        "PRIORITY RULE: When multiple tools returned results, focus on the tool(s) most relevant to the user's actual question. "
+        "Ignore tool outputs that don't relate to what the user asked about. "
+        "For example, if the user asked about 'Bangalore customers' and `get_stock_levels` also returned data, just answer about the customer.\n"
         "\n"
         "HARD RULES:\n"
     )
@@ -3402,8 +2677,10 @@ async def response_generation_node(state: MainState):
          "6. Keep the reply to 1-4 short sentences (up to 8 if the user asked for multiple separate items).\n"
          "7. ONLY when a JSON record contains the literal key '__note' (showing 'X of Y records not shown'), "
          "tell the user: 'i can only show the records i have given you.Pleace give a specific filter or query to see the other records.'\n"
-         "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
-         "Say so plainly: 'X ka koi record nahi mila' in the user's language. Do NOT say records are hidden.\n"
+        "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
+"Say so plainly: 'data nahi mila' or 'kuch nahi mila' in the user's language. "
+"Do NOT repeat back any entity name, company name, ID, or invoice number that the user mentioned — "
+"the tool found nothing, so there is nothing to confirm. Do NOT say records are hidden.\n"
          "9. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
          "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
          "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"

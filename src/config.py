@@ -8,16 +8,16 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings  # noqa: E402
 
 embedding_model = OpenAIEmbeddings(
     model=os.getenv("EMB_MODEL"),
-    base_url= os.getenv("BASE_URL"),
-    api_key= os.getenv("MODEL_API_KEY"),
+    base_url= os.getenv("EMB_BASE_URL"),
+    api_key= os.getenv("EMB_MODEL_API_KEY"),
     timeout=180,
     check_embedding_ctx_length=False,
 )
 
 normalizer_llm = ChatOpenAI(
     model=os.getenv("TRANS_LLM_MODEL"),
-    base_url= os.getenv("BASE_URL"),
-    api_key= os.getenv("MODEL_API_KEY"),
+    base_url= os.getenv("TRANS_BASE_URL"),
+    api_key= os.getenv("TRANS_MODEL_API_KEY"),
     temperature=0.0,
     max_tokens=256,
     timeout=60,
@@ -40,8 +40,8 @@ llm = ChatOpenAI(
 )
 summary_llm = ChatOpenAI(
     model= os.getenv("SUMMARY_LLM_MODEL") ,
-    base_url= os.getenv("BASE_URL"),
-    api_key= os.getenv("MODEL_API_KEY"),
+    base_url= os.getenv("SUMMARY_BASE_URL"),
+    api_key= os.getenv("SUMMARY_MODEL_API_KEY"),
     temperature=0.0,
     max_tokens=4096,
     timeout=120,
