@@ -115,6 +115,16 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
     if _has_own_identifiers(query):
         return query, []
 
+    # First priority: focus_entity from the most recent matched invoice/customer lookup
+    focus = (conv_ctx or {}).get("focus_entity")
+    if focus and focus.get("name"):
+        name = focus["name"]
+        resolved = query
+        for p in found:
+            resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
+        return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
+
+    # Fallback: generic entities list (accumulated from all tool data)
     entities = (conv_ctx or {}).get("entities", [])
     if entities:
         name = entities[-1].get("name", "")
@@ -830,7 +840,7 @@ async def semantic_search(state: MainState) -> MainState:
         elif document_type in {"customer_ledger", "ledger"}:
             maybe_append = ["get_customer_ledger"]
         elif document_type in {"purchase_invoice", "purchase"}:
-            maybe_append = ["get_outstanding_purchase_invoices", "get_purchase_summary"]
+            maybe_append = ["get_outstanding_purchase_invoices", "get_overdue_invoices", "get_purchase_summary"]
         elif document_type in {"sales_invoice", "sales"}:
             maybe_append = ["get_outstanding_sales_invoices", "get_overdue_invoices", "get_sales_summary"]
         elif document_type in {"gst", "gst_report", "gst_summary"}:
@@ -2469,22 +2479,38 @@ async def deterministic_final_node(state: MainState):
         "summary": make_summary(data, errors, unsupported_parts, total_rows),
         "errors": errors,
     }
-    # Resolve invoice match conflicts: prefer tool whose domain aligns with document_type
+    # Resolve invoice match conflicts
     if invoice_matches:
         doc_domain = document_type.replace("_invoice", "").replace("_", "")
+        combined_q = f"{user_query or ''} {canonical_query or ''}".lower()
         preferred = None
-        # First pass: look for a match whose TOOL_DOMAINS contains the doc_domain
+        # First pass: prefer tool whose name keywords appear in the query
         for tn, match in invoice_matches.items():
             td = set(TOOL_DOMAINS.get(tn, []))
-            if doc_domain in td:
+            if doc_domain not in td:
+                continue
+            tool_kw = tn.replace("get_", "").replace("_", " ")
+            if any(word in combined_q for word in tool_kw.split()):
                 preferred = match
                 break
-        # Second pass: if no domain-aligned match, pick the one with the latest match
+        # Second pass: iterate in reverse (most recently processed tool wins)
+        if preferred is None:
+            for tn, match in reversed(list(invoice_matches.items())):
+                td = set(TOOL_DOMAINS.get(tn, []))
+                if doc_domain in td:
+                    preferred = match
+                    break
+        # Fallback: last match wins
         if preferred is None:
             for tn, match in invoice_matches.items():
-                preferred = match  # last one wins (insertion order preserved)
+                preferred = match
         final_response["_invoice_match"] = preferred
         invoice_tool_match = preferred
+        # Store the matched entity name for pronoun resolution in follow-ups
+        mr = preferred.get("matched_record", {})
+        focus_name = mr.get("ledgerName") or mr.get("customerName") or mr.get("name") or ""
+        if focus_name:
+            ctx["focus_entity"] = {"name": focus_name}
 
     if total_rows > 0:
         final_response["total_rows"] = total_rows

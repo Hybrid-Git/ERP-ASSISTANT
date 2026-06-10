@@ -141,7 +141,8 @@ async def _fetch_invoice_with_pagination(endpoint: str, body: dict, report_type:
         last_result["matched_record"] = matched_record
         last_result = append_report_summary_row(last_result, report_type)
     else:
-        last_result["data"] = all_records
+        last_result["data"] = []
+        last_result["total_rows"] = 0
         last_result = append_report_summary_row(last_result, report_type)
 
     last_result["_invoice_target"] = invoice_no
