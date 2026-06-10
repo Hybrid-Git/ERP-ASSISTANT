@@ -52,7 +52,7 @@ START
 | `routing_node` | Routes to `tools` if last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends. Falls through after `loop_count > 5`. |
 | `tools` | Executes tool functions against the Chapter-1 backend API via `ToolNode`. |
 | `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids`. Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities. |
-| `response_generation` | Generates natural-language response mirroring the user's language (Hinglish/Hindi/English). Uses summary LLM with language-aware system prompt. Falls back to inline text builder on error. |
+| `response_generation` | Generates natural-language response mirroring the user's language (Hinglish/Hindi/English). Uses summary LLM with language-aware system prompt + Rule 0 (anti-JSON directive). Post-processes output via `_clean_llm_response` (strips meta-framing/JSON). Falls back to `summary` text or minimal record count on error. |
 | `summarization` | After 6+ human messages, summarizes old context using summary LLM and deletes past messages via `RemoveMessage`. Strips `raw_response` from ToolMessage content before summary input. Caps summary at 16,000 characters. |
 
 ---
@@ -460,7 +460,9 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 - **In-memory sessions** — sessions are lost on server restart. Switch to SQLite for persistence.
 - **Summarization trim** — after 6+ human messages, old context is summarized via LLM; summary quality depends on the model.
 - **Single-call-per-response LLM** — some LLMs emit only 1-2 tool calls per response for multi-part queries; the force-inject and retry loop compensate, but may still miss borderline-relevant tools.
-- **Small-context LLMs** — models with small context windows (7B) may drop less-relevant tools during the bind_tools step; the 8-tool trim limit can lose query-part-specific tools if parts exceed the budget.
+- **Small-context LLMs** — models with small context windows (7B) may drop less-relevant tools during the bind_tools step; the tool trim limit can lose query-part-specific tools if parts exceed the budget.
+- **Response generation model quality** — the `summary_llm` (same model as the worker) may occasionally output raw JSON instead of natural language; the `_clean_llm_response` post-processor and improved fallback mitigate this.
+- **Entity memory limited to direct-lookup tools** — aggregation tools (`get_top_customer`, `get_sales_trend`, `get_stock_levels`) are excluded from `conversation_context.entities` to prevent pronoun-pollution.
 
 ---
 
