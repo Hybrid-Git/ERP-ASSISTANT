@@ -74,6 +74,9 @@ async def response_generation_node(state: MainState):
     memory_answer = state.get("memory_answer", "")
     final_response = state.get("final_response", {})
     if memory_answer:
+        query_type = state.get("query_type", "")
+        if query_type in ("capability", "ambiguous", "greeting", "ood", "conversational"):
+            return {"response_text": memory_answer, "memory_answer": ""}
         tool_data = final_response.get("data", {}) if isinstance(final_response, dict) else {}
         has_real_data = any(
             isinstance(recs, list) and len(recs) > 0
