@@ -1,6 +1,6 @@
 # Chapter1-Assist
 
-A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the Chapter-1 backend API, and returning structured JSON or natural-language responses. Detects greetings and responds appropriately; silently rejects out-of-context queries.
+A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the Chapter-1 backend API, and returning natural-language responses. Supports English, Hinglish (Hindi words in Latin script), and Hindi (Devanagari) input — responses always use Latin script (Hinglish for Hindi/Hinglish input, English for English input). Detects greetings and capabilities, routes vague queries to an ambiguous handler, formats list results as bullets, and silently rejects out-of-context queries.
 
 **Author:** Yash Sheth
 
@@ -47,12 +47,12 @@ START
 | Node | Responsibility |
 |---|---|
 | `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — 3 fast-path shortcuts. Stores both `original_query` and `canonical_query`. |
-| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. Splits multi-intent queries. Detects meta-questions, greetings (returns welcome message), and unsupported queries (returns refusal). |
-| `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Missing tools are force-injected with domain-aware dedup (one tool per domain). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, multi-identifier expansion, and tool-alignment cross-domain guard. Falls back to `memory_answer` via summary LLM when no tools are selected. |
+| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. Splits multi-intent queries. Detects greetings (12 patterns), capability questions (30+ patterns), meta-questions, and unsupported queries. Vague queries with no domain content (e.g. "list do", "batao", "show") route to ambiguous handler instead of selecting tools. Domain-content check uses `VAGUE_ACTION_WORDS` (40 English+Hinglish action words) to exclude generic verbs from domain detection. |
+| `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Missing tools are force-injected with domain-aware dedup (one tool per domain). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, multi-identifier expansion, and tool-alignment cross-domain guard. Falls back to `memory_answer` via summary LLM when no tools are selected. Special handlers for greeting, capability, ambiguous, and OOD queries each have an explicit LANGUAGE RULE prohibiting Devanagari output — responses always use Latin script (Hinglish or English). |
 | `routing_node` | Routes to `tools` if last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends. Falls through after `loop_count > 5`. |
 | `tools` | Executes tool functions against the Chapter-1 backend API via `ToolNode`. |
 | `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids`. Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities. |
-| `response_generation` | Generates natural-language response mirroring the user's language (Hinglish/Hindi/English). Uses summary LLM with language-aware system prompt + Rule 0 (anti-JSON directive). Post-processes output via `_clean_llm_response` (strips meta-framing/JSON). Falls back to `summary` text or minimal record count on error. |
+| `response_generation` | Generates natural-language response using summary LLM. Three display modes: default (5 records), list_mode (10 records with bullet formatting for queries with `list_words` like "sare", "sab", "list"), and detail_mode (20 records with all fields for "all details" queries). Language-aware system prompt enforces: Hinglish (Latin script) for any Hindi or Hinglish input, English for English input — no Devanagari output ever. Post-processes via `_clean_llm_response` (strips meta-framing/JSON). Falls back to summary text or minimal record count on error. |
 | `summarization` | After 6+ human messages, summarizes old context using summary LLM and deletes past messages via `RemoveMessage`. Strips `raw_response` from ToolMessage content before summary input. Caps summary at 16,000 characters. |
 
 ---
@@ -89,9 +89,34 @@ START
 
 Three LLM instances (`normalizer_llm`, `llm`, `summary_llm`) are created from environment variables (`TRANS_LLM_MODEL`, `LLM_MODEL`, `SUMMARY_LLM_MODEL`). Works with any OpenAI-compatible endpoint — Ollama, vLLM, Groq, or OpenAI itself. `/no_think` directive is appended to all system prompts to suppress chain-of-thought reasoning.
 
-### Greeting Detection & Out-of-Context Refusal
+### Greeting, Capability & Out-of-Context Detection
 
-The `semantic_search_node` recognizes common greetings via regex patterns. Pure greetings return a welcome message immediately. Non-ERP queries receive a clear refusal message.
+The `semantic_search_node` uses 12 greeting regex patterns (English + Hinglish: "kaise ho", "aap kaise hain", "kya haal", etc.) and 30+ capability patterns (English + Hinglish: "kya kar sakte ho", "kya karta hai", "list features", etc.). Pure greetings return a welcome message immediately; capability queries describe what the assistant can do. Non-ERP queries receive a clear refusal message.
+
+### Vague Query Routing
+
+Queries consisting of only generic action words with no domain noun (e.g. "list do", "batao", "show", "details do", "fetch it") are automatically routed to the **ambiguous handler**. A set of 40 `VAGUE_ACTION_WORDS` (English + Hinglish: "list", "show", "batao", "dikhao", "karo", "kuch", etc.) is subtracted from query tokens before checking against domain keywords. If no domain-specific content remains, the ambiguous handler responds with a friendly capabilities overview and asks the user to specify what they want. This prevents vague queries from auto-selecting ERP tools or reusing tools from conversation history.
+
+### List Mode & Detail Mode
+
+Three display modes controlled by query patterns:
+
+| Mode | Trigger Keywords | Max Records | Behavior |
+|------|-----------------|-------------|----------|
+| Default | — | 5 | Plain conversational sentences |
+| List mode | `list_words` from config.yaml ("sare", "saare", "sab", "list", "all", "jo jo", etc.) | 10 | Bullet points with 1-2 most relevant fields per record; total count mentioned; offers to show more |
+| Detail mode | "all details", "sabhi detail", "full info", "sara detail", etc. | 20 | Every field shown per record |
+
+List mode is config-driven via `config.yaml` `list_words` (14 words/phrases).
+
+### Language Consistency (No Devanagari)
+
+All responses use Latin script only — no Devanagari or other non-Latin characters. Enforced at two levels:
+
+- **Translator layer**: If the LLM detects the language as "hindi" but the user's query contains no Devanagari unicode characters (`\u0900-\u097F`), the language is forced to "hinglish". This prevents false "hindi" detection for users typing Hindi words in Latin script.
+- **Prompt layer**: All four special handlers in `chat_model.py` (greeting, capability, ambiguous, OOD) include an explicit LANGUAGE RULE: *"If the user wrote in Hindi or Hinglish, your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. Do NOT use Devanagari."* The `response_generation` node applies the same rule via language-aware system prompt branches.
+
+Result: Hindi (Devanagari) or Hinglish (Latin) input → Hinglish output. English input → English output. No mixed-script responses.
 
 ### Fast-Path Translator
 
@@ -470,6 +495,7 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 - **Small-context LLMs** — models with small context windows (7B) may drop less-relevant tools during the bind_tools step; the tool trim limit can lose query-part-specific tools if parts exceed the budget.
 - **Response generation model quality** — the `summary_llm` (same model as the worker) may occasionally output raw JSON instead of natural language; the `_clean_llm_response` post-processor and improved fallback mitigate this.
 - **Entity memory limited to direct-lookup tools** — aggregation tools (`get_top_customer`, `get_sales_trend`, `get_stock_levels`) are excluded from `conversation_context.entities` to prevent pronoun-pollution.
+- **Translator language detection** — the LLM-based translator may classify Latin-script Hinglish queries as "hindi"; a Devanagari unicode check overrides this to "hinglish", but edge cases with mixed scripts may still produce unexpected language classification.
 
 ---
 
