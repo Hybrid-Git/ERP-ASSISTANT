@@ -407,7 +407,7 @@ pretty_field_names:
   payablesCount: Payable Invoices
 
 # ── Identifier extraction patterns ──
-# Used by extract_query_identifiers() in nodes.py to detect specific lookups.
+# Used by extract_query_identifiers() in src/utils.py to detect specific lookups.
 # Patterns with capture groups return the captured value; others return full match.
 # Add new invoice/code formats here without touching Python.
 identifier_patterns:

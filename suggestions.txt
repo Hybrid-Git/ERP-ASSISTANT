@@ -1,0 +1,83 @@
+# Suggestions — Code & Model Improvements
+
+Generated after fixing 12+ bugs in the ERP analytics chatbot. Code bugs are done;
+below are recommendations for hardening and potential model-side improvements.
+
+---
+
+## Code-side (low effort, high value)
+
+1. **Unit test `_clean_llm_response`** — The post-processor is now load-bearing but
+   has zero test coverage. A simple assertion like
+   `assert "Based on" not in _clean_llm_response("Based on...")` catches regressions.
+
+2. **Log a JSON-leak warning** — When `_clean_llm_response` strips >0 characters,
+   log a line with the response snippet. This gives you a measurable hit rate for
+   how often the LLM misbehaves vs how often the prompt is sufficient.
+
+3. **Move hard-coded response rules into a config list** — The 15+ numbered rules
+   live as one giant string in `src/response_gen.py`. Splitting into a
+   `SYSTEM_RULES: list[str]` list and joining with `\n` would make future edits
+   surgical and testable.
+
+4. **Add a typed schema for the fallback response** — The `except` block currently
+   builds `"{tool}: {n} record(s)"` strings ad-hoc. If/when you swap models, this
+   fallback is your safety net. A `FallbackResponse` TypedDict would make it
+   predictable and testable.
+
+5. **Log `summary_llm` identity per response turn** — `astream` failures with empty
+   content are hard to debug. Printing `summary_llm.model` and per-chunk sizes
+   would tell you instantly whether it's a model or wire issue.
+
+6. **Expose `RESPONSE_LLM_*` env vars now (even if same model)** — Add
+   `RESPONSE_LLM_MODEL`, `RESPONSE_BASE_URL`, `RESPONSE_MODEL_API_KEY` to
+   `src/config.py` and `.env.example`, wired to a new `response_llm` instance.
+   Use it in `response_generation_node`. When you decide to swap, it's a
+   one-line `.env` change. Costs nothing today, saves a refactor later.
+
+7. **Document why the prompt is "defensive"** — Add a source comment explaining
+   that 15+ hard rules exist because 7B models need heavy guardrails. Prevents
+   future contributors from "cleaning up" the prompt and breaking something.
+
+---
+
+## Model-side (higher effort, better long-term)
+
+1. **Prefer `qwen3:8b` for response generation** — Same VRAM class as
+   `qwen2.5:7b` (~5 GB), better instruction following. If you ever add
+   `RESPONSE_LLM_*` env vars, set `RESPONSE_LLM_MODEL=qwen3:8b` and keep
+   `SUMMARY_LLM_MODEL=qwen2.5:7b`. Targeted upgrade, no collateral.
+
+2. **Skip `qwen2:14b q4` for now** — ~9 GB VRAM, slower per turn, and the
+   quality gain over `qwen3:8b` for Hinglish is unproven. Benchmark before
+   committing if you're curious.
+
+3. **Keep `summary_llm` (memory paths) on qwen2.5:7b** — The memory-summarizer
+   and memory-answer paths are short, low-stakes, and fire 3-5+ times per turn.
+   Keeping them fast/cheap is the right default.
+
+4. **Build a 10-prompt eval before swapping** — Write prompts like:
+   - "Vrudhi ka sales overdue detail"
+   - "PR-52 invoice ka sab detail"
+   - "muje gst summary chaias" (no dates → memory_answer)
+   - "Bangalore aur Hyderabad customers" (multi-city dedup)
+   - "baki dono" (plural pronoun)
+   Run with current code, count how many responses needed `_clean_llm_response`.
+   If <20%, the prompt fix is enough. If >50%, model swap is justified.
+
+5. **Gate the swap behind a feature flag** — `USE_RESPONSE_LLM=true` env var so
+   you can A/B compare in production without redeploying.
+
+---
+
+## Summary of what's fixed vs what's model
+
+| Category | Count | Status |
+|---|---|---|
+| Pure code bugs (entity, dedup, pronoun, GST dates, etc.) | 12+ | Fixed |
+| Response quality (JSON leak, empty response) | Mostly model | Patched with Rule 0 + cleaner + fallback |
+| `qwen2.5:7b` instruction-following limitations | Pure model | Manageable with workarounds |
+
+**Next step (if desired):** Implement suggestion #6 (env vars + `response_llm`
+instance) as zero-risk groundwork. Then swap models only if the eval shows it's
+worth it.

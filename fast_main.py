@@ -172,6 +172,43 @@ def get_output_format() -> str:
     return os.getenv("OUTPUT_FORMAT", "text")
 
 
+# ── Shared chat helpers ──
+
+async def _prepare_session(session_id: str):
+    session = session_store.get_or_create_session(session_id)
+    past_messages = session_store.load_messages(session_id)
+    past_summary = (session or {}).get("summary", "")
+    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
+    return session, past_messages, past_summary, past_context, past_last_tool
+
+
+def _save_chat_result(session_id: str, result: dict):
+    updated_messages = list(result.get("updated_messages", []))
+    response_text = result.get("response_text")
+    if response_text:
+        updated_messages.append(AIMessage(content=response_text))
+    session_store.save_session(
+        session_id,
+        updated_messages,
+        result.get("summary", ""),
+        result.get("conversation_context"),
+        result.get("last_tool_call"),
+    )
+    return result
+
+
+def _build_langsmith_config(run_name: str, request_id: str, query: str, session_id: str, tags: list | None = None) -> dict:
+    return {
+        "run_name": run_name,
+        "tags": tags or ["fastapi", "langgraph", "erp-assistant"],
+        "metadata": {
+            "request_id": request_id,
+            "query": query,
+            "session_id": session_id,
+        },
+    }
+
+
 _pretty_field_names = get_cfg("pretty_field_names", default={})
 
 def pretty_field_name(key: str) -> str:
@@ -458,22 +495,8 @@ async def root():
 async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="format")):
     request_id = str(uuid.uuid4())
     session_id = request.session_id or "default_session"
-
-    session = session_store.get_or_create_session(session_id)
-
-    past_messages = session_store.load_messages(session_id)
-    past_summary = (session or {}).get("summary", "")
-    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
-
-    langsmith_config = {
-        "run_name": "CHAPTER1_ASSIST_CHAT",
-        "tags": ["fastapi", "langgraph", "erp-assistant"],
-        "metadata": {
-            "request_id": request_id,
-            "query": request.query,
-            "session_id": session_id,
-        },
-    }
+    _, past_messages, past_summary, past_context, past_last_tool = await _prepare_session(session_id)
+    langsmith_config = _build_langsmith_config("CHAPTER1_ASSIST_CHAT", request_id, request.query, session_id)
 
     try:
         result = await run_graph_query(
@@ -485,21 +508,7 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
             langsmith_config=langsmith_config,
         )
 
-        updated_messages = list(result.get("updated_messages", []))
-        response_text = result.get("response_text")
-        if response_text:
-            updated_messages.append(AIMessage(content=response_text))
-
-        context = result.get("conversation_context")
-        last_tool = result.get("last_tool_call")
-        session_store.save_session(
-            session_id,
-            updated_messages,
-            result.get("summary", ""),
-            context,
-            last_tool,
-        )
-
+        _save_chat_result(session_id, result)
         result["session_id"] = session_id
         result.pop("updated_messages", None)
 
@@ -529,22 +538,11 @@ async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="for
 async def chat_stream(request: ChatRequest):
     request_id = str(uuid.uuid4())
     session_id = request.session_id or "default_session"
-
-    session = session_store.get_or_create_session(session_id)
-
-    past_messages = session_store.load_messages(session_id)
-    past_summary = (session or {}).get("summary", "")
-    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
-
-    langsmith_config = {
-        "run_name": "CHAPTER1_ASSIST_CHAT_STREAM",
-        "tags": ["fastapi", "langgraph", "erp-assistant", "stream"],
-        "metadata": {
-            "request_id": request_id,
-            "query": request.query,
-            "session_id": session_id,
-        },
-    }
+    _, past_messages, past_summary, past_context, past_last_tool = await _prepare_session(session_id)
+    langsmith_config = _build_langsmith_config(
+        "CHAPTER1_ASSIST_CHAT_STREAM", request_id, request.query, session_id,
+        tags=["fastapi", "langgraph", "erp-assistant", "stream"],
+    )
 
     initial_state = {
         "user_query": request.query,
@@ -660,22 +658,11 @@ async def chat_stream(request: ChatRequest):
 async def chat_text(request: ChatRequest):
     request_id = str(uuid.uuid4())
     session_id = request.session_id or "default_session"
-
-    session = session_store.get_or_create_session(session_id)
-
-    past_messages = session_store.load_messages(session_id)
-    past_summary = (session or {}).get("summary", "")
-    past_context, past_last_tool = session_store.load_session_context(session_id)[1:]
-
-    langsmith_config = {
-        "run_name": "CHAPTER1_ASSIST_CHAT_TEXT",
-        "tags": ["fastapi", "langgraph", "erp-assistant", "text-response"],
-        "metadata": {
-            "request_id": request_id,
-            "query": request.query,
-            "session_id": session_id,
-        },
-    }
+    _, past_messages, past_summary, past_context, past_last_tool = await _prepare_session(session_id)
+    langsmith_config = _build_langsmith_config(
+        "CHAPTER1_ASSIST_CHAT_TEXT", request_id, request.query, session_id,
+        tags=["fastapi", "langgraph", "erp-assistant", "text-response"],
+    )
 
     try:
         result = await run_graph_query(
@@ -687,19 +674,7 @@ async def chat_text(request: ChatRequest):
             langsmith_config=langsmith_config,
         )
 
-        updated_messages = list(result.get("updated_messages", []))
-        response_text = result.get("response_text")
-        if response_text:
-            updated_messages.append(AIMessage(content=response_text))
-
-        session_store.save_session(
-            session_id,
-            updated_messages,
-            result.get("summary", ""),
-            result.get("conversation_context"),
-            result.get("last_tool_call"),
-        )
-
+        _save_chat_result(session_id, result)
         result.pop("updated_messages", None)
         text = result.get("response_text") or result.get("response")
         if not isinstance(text, str):

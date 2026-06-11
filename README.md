@@ -197,7 +197,14 @@ CHAPTER1-ASSIST/
 │   ├── api.py                # HTTP client for Chapter-1 ERP API
 │   ├── tools_api.py          # 19 ERP tool functions (API calls, caching, filtering, projection)
 │   ├── tool_doc.py           # Tool registry (TOOL_INTENT_REGISTRY), repair configs, field aliases
-│   ├── nodes.py              # All LangGraph nodes (translator, semantic search, chat model, routing, deterministic final, response generation, summarization)
+│   ├── tools.py              # ToolNode for LangGraph
+│   ├── translator.py         # Translator node + pronoun resolution
+│   ├── semantic_search.py    # Semantic search + domain classification
+│   ├── chat_model.py         # Chat model node with retry/repair
+│   ├── routing.py            # Routing node
+│   ├── deterministic_final.py# Deterministic final + data processing
+│   ├── response_gen.py       # Response generation node
+│   └── summarization.py      # Summarization node
 │   └── graph.py              # StateGraph builder with conditional routing and timed_node wrapper
 │
 └── README.md
