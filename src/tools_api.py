@@ -341,6 +341,24 @@ def project_result(result: dict, fields=None, filters=None) -> dict:
         data = [data]
 
     data = apply_filters(data, filters)
+
+    # Ensure fields used in filters survive projection (e.g. ledgerName)
+    # so filtered records retain context for the LLM
+    if fields is not None and filters is not None:
+        filter_keys = list(filters.keys())
+        norm_fields = normalize_fields(fields)
+        if norm_fields and "*" not in norm_fields:
+            for k in filter_keys:
+                if k not in norm_fields:
+                    if isinstance(fields, list):
+                        fields = list(fields) + [k]
+                    elif isinstance(fields, dict):
+                        fields = dict(fields)
+                        fields[k] = True
+                    elif isinstance(fields, str):
+                        fields = fields + "," + k
+                    break
+
     data = project_fields(data, fields)
 
     result["data"] = data
@@ -1249,6 +1267,72 @@ async def get_stock_levels(
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
+
+async def _fetch_invoices_with_pagination(
+    endpoint: str,
+    body: dict,
+    fields,
+    filters: Optional[dict],
+    report_type: str,
+) -> dict:
+    """
+    Fetches invoice data with automatic pagination when local filters
+    return empty but total_rows > limit (API didn't filter server-side).
+
+    Hybrid approach:
+    1. Try high-limit single call (limit = min(total_rows, 10000))
+    2. Fallback: paginate up to 10 pages with limit=500 each
+    """
+    MAX_HIGH_LIMIT = 10000
+    MAX_FALLBACK_PAGES = 10
+    FALLBACK_PAGE_LIMIT = 500
+
+    result = await cached_api_post(endpoint, body=body)
+    raw = result.get("raw_response", {}) or {}
+    api_data = list(result.get("data", []) or []) if isinstance(result.get("data"), list) else []
+    total_rows = raw.get("total_rows", 0) or 0
+    orig_limit = body.get("limit", 50)
+
+    needs_more = (
+        filters
+        and total_rows > orig_limit
+        and len(api_data) > 0
+        and len(apply_filters(list(api_data), filters)) == 0
+    )
+
+    if needs_more:
+        total_pages = raw.get("total_pages", 0) or 1
+        high_limit = min(total_rows, MAX_HIGH_LIMIT)
+        if high_limit > orig_limit:
+            high_body = {**body, "limit": high_limit, "page": 1}
+            high_result = await cached_api_post(endpoint, body=high_body)
+            high_data = high_result.get("data", [])
+            if isinstance(high_data, list) and len(high_data) > len(api_data):
+                api_data = list(high_data)
+
+        if len(apply_filters(list(api_data), filters)) == 0:
+            max_pages = min(total_pages + 1, MAX_FALLBACK_PAGES + 1)
+            for p in range(2, max_pages + 1):
+                page_body = {**body, "page": p, "limit": FALLBACK_PAGE_LIMIT}
+                page_result = await cached_api_post(endpoint, body=page_body)
+                page_data = page_result.get("data", [])
+                if isinstance(page_data, list):
+                    api_data.extend(page_data)
+
+    combined = {
+        "success": True,
+        "status_code": 200,
+        "data": api_data,
+        "count": len(api_data),
+        "raw_response": raw,
+    }
+    combined = append_report_summary_row(combined, report_type)
+    combined = project_result(combined, fields=fields, filters=filters)
+    print(f"[PAGINATION] Collected {len(api_data)} records → {len(combined.get('data', []))} after filter")
+
+    return combined
+
+
 @tool
 async def get_outstanding_sales_invoices(
     from_date: str = "",
@@ -1293,9 +1377,9 @@ async def get_outstanding_sales_invoices(
     if filters:
         body["filters"] = filters
 
-    result = await cached_api_post(OUTSTANDING_SALES_INVOICES_ENDPOINT, body=body)
-    result = append_report_summary_row(result, "outstandingSalesInvoices")
-    result = project_result(result, fields=fields, filters=filters)
+    result = await _fetch_invoices_with_pagination(
+        OUTSTANDING_SALES_INVOICES_ENDPOINT, body, fields, filters, "outstandingSalesInvoices"
+    )
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -1345,9 +1429,9 @@ async def get_outstanding_purchase_invoices(
     if filters:
         body["filters"] = filters
 
-    result = await cached_api_post(OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body=body)
-    result = append_report_summary_row(result, "outstandingPurchaseInvoices")
-    result = project_result(result, fields=fields, filters=filters)
+    result = await _fetch_invoices_with_pagination(
+        OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body, fields, filters, "outstandingPurchaseInvoices"
+    )
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -1394,9 +1478,9 @@ async def get_overdue_invoices(
     if filters:
         body["filters"] = filters
 
-    result = await cached_api_post(OVERDUE_INVOICES_ENDPOINT, body=body)
-    result = append_report_summary_row(result, "overdueInvoices")
-    result = project_result(result, fields=fields, filters=filters)
+    result = await _fetch_invoices_with_pagination(
+        OVERDUE_INVOICES_ENDPOINT, body, fields, filters, "overdueInvoices"
+    )
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)

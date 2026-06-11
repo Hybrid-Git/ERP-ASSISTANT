@@ -339,7 +339,9 @@ async def semantic_search(state: MainState) -> MainState:
             selected_tools = [t for t in selected_tools if t not in ('get_customer',)]
 
         if combined and any(re.search(p, combined, re.IGNORECASE) for pats in INVOICE_PATTERNS.values() for p in pats):
-            selected_tools = [t for t in selected_tools if t != 'get_customer_ledger']
+            has_ledger_intent = any(kw in combined.lower() for kw in ['khata', 'ledger', 'statement', 'hisaab', 'account', 'balance'])
+            if not has_ledger_intent:
+                selected_tools = [t for t in selected_tools if t != 'get_customer_ledger']
 
         if document_type in {"purchase_invoice", "purchase"}:
             selected_tools = [t for t in selected_tools if set(TOOL_DOMAINS.get(t, [])) != {"sales"}]
