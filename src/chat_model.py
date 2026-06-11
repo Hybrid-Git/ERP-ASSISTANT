@@ -530,7 +530,14 @@ async def chat_model_node(state: MainState):
                 query_invoice_no = m.group(0)
                 break
 
+        known_entity_ids = set()
+        for e in (state.get("conversation_context") or {}).get("entities", []):
+            eid = e.get("id")
+            if eid is not None:
+                known_entity_ids.add(str(eid))
+
         for qp in query_parts:
+            qp_lower = qp.lower()
             qp_domains, _ = classify_domains(qp, state.get("resolved_entities"))
             if doc_override:
                 qp_domains.add(doc_override)
@@ -543,8 +550,21 @@ async def chat_model_node(state: MainState):
                 if not qp_domains:
                     meta = TOOL_INTENT_REGISTRY.get(tn, {})
                     all_kw = set(meta.get("keywords", [])) | set(meta.get("aliases", []))
-                    if not any(kw in qp.lower() for kw in all_kw):
+                    if not any(kw in qp_lower for kw in all_kw):
                         continue
+                # Skip force-injecting get_top_customer when query is about a specific
+                # customer search (city, name, location) — it only returns revenue aggregates.
+                if tn == "get_top_customer":
+                    top_kws = {"top customer", "best customer", "highest", "most revenue", "top buyer", "top client"}
+                    if not any(kw in qp_lower for kw in top_kws):
+                        customer_search_kws = {"customer", "party", "detail", "information", "bangalore", "details"}
+                        if any(kw in qp_lower for kw in customer_search_kws):
+                            print(f"[FORCE-INJECT] Skipping {tn} — query is a customer search, not a top-customer query")
+                            continue
+                # Skip force-injecting get_customer_ledger with empty args — customer_id is required.
+                if tn == "get_customer_ledger" and not known_entity_ids:
+                    print(f"[FORCE-INJECT] Skipping {tn} — no known customer_id available")
+                    continue
                 inject_args = {}
                 if tn in INVOICE_TOOLS and query_invoice_no:
                     inject_args = {"filters": {"invoiceNo": query_invoice_no}}

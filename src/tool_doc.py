@@ -41,8 +41,8 @@ TOOL_INTENT_REGISTRY = {
     "get_customer_ledger": {
         "category": "customer_ledger",
         "multi_call_ok": True,
-        "description": "Fetch customer ledger or account statement by customer_id; returns opening, current, closing balance and transactions.",
-        "prompt_tips": "customer_id=int, dates YYYY-MM-DD.",
+        "description": "Fetch customer ledger or account statement by customer_id; returns opening, current, closing balance and transactions. IMPORTANT: customer_id MUST come from a prior get_customer call result. Use get_customer first to find the correct customer_id.",
+        "prompt_tips": "customer_id=int (from get_customer result), dates YYYY-MM-DD.",
         "aliases": [
             "ledger", "account statement", "statement", "khata", "hisab",
             "customer_ledger",
@@ -234,8 +234,8 @@ TOOL_INTENT_REGISTRY = {
     "get_top_customer": {
         "category": "customer",
         "multi_call_ok": True,
-        "description": "Fetch top customers by revenue, order count, or other metrics for a given period.",
-        "prompt_tips": "period=current_fy|current_month|last_month|last_fy, sort_by=revenue|orderCount, limit=N.",
+        "description": "Fetch top customers by revenue, order count, or other metrics. IMPORTANT: Returns only revenue-ranked aggregate data (not full customer details). Do NOT use this to search for a specific customer by name or city — use get_customer instead.",
+        "prompt_tips": "period=current_fy|current_month|last_month|last_fy, sort_by=revenue|orderCount, limit=N. Use get_customer for customer name/city searches.",
         "aliases": [
             "top customer", "top customers", "best customer", "best customers",
             "top buyer", "top buyers", "top client", "top clients",
@@ -353,7 +353,7 @@ TOOL_INTENT_REGISTRY = {
             "param_aliases": {},
         },
         "record_filters": [
-            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact"},
+            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact_case_insensitive"},
             {"id_key": "party_id", "match_field": "ledgerId", "match_type": "exact"},
         ],
     },
@@ -376,7 +376,7 @@ TOOL_INTENT_REGISTRY = {
             "param_aliases": {},
         },
         "record_filters": [
-            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact"},
+            {"id_key": "invoice_no", "match_field": "invoiceNo", "match_type": "exact_case_insensitive"},
             {"id_key": "party_id", "match_field": "ledgerId", "match_type": "exact"},
         ],
     },

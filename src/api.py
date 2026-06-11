@@ -102,6 +102,7 @@ async def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict
             "data": [],
             "count": 0,
             "error": "API request timed out",
+            "raw_response": {},
         }
 
     except httpx.ConnectError:

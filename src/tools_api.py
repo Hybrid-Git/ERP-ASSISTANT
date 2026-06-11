@@ -840,9 +840,12 @@ async def get_top_customer(
 ):
     """
     Fetch top customers by revenue, order count, or other metrics.
+    IMPORTANT: Returns only revenue-ranked aggregate data (not full customer details).
+    Do NOT use this to search for a specific customer by name or city — use get_customer instead.
 
     Use this tool when the user asks about top customers, best customers,
     highest spending customers, top buyers, top clients, etc.
+    Do NOT use for: customer search by name/city/location.
 
     Args:
         period: Time period ("current_fy", "current_month", "last_month", "last_fy", etc.). Default "current_fy".
@@ -1029,7 +1032,7 @@ async def get_search_vendors(
 @tool
 async def get_customer(
     search: Optional[str] = "",
-    limit: int = 10,
+    limit: int = 100,
     fields: Optional[Any] = None,
     filters: Optional[dict[str, Any]] = None,
 ):
@@ -1043,7 +1046,7 @@ async def get_customer(
     Args:
         search: Customer name or party name (substring match). Use empty string "" to return ALL customers.
             Do NOT pass concepts like "outside india" or city names as search; those are not customer names.
-        limit: Number of records to fetch. Default is 10.
+        limit: Number of records to fetch. Default is 100.
         fields: Optional output columns.
         filters: Optional exact filters.
     """
@@ -1083,7 +1086,7 @@ async def get_customer_ledger(
     from_date: str = "",
     to_date: str = "",
     page: int = 1,
-    limit: int = 10,
+    limit: int = 50,
     fields: Optional[Any] = None,
     filters: Optional[dict[str, Any]] = None,
 ):
@@ -1095,15 +1098,15 @@ async def get_customer_ledger(
     closing balance, debit/credit history, or customer account statement.
 
     Important:
-        customer_id is required.
-        If the user gives only customer name, call get_customer first.
+        customer_id is required and MUST come from a prior get_customer call result.
+        If the user gives only customer name, call get_customer first to find the customer_id.
 
     Args:
-        customer_id: Numeric customer ID.
+        customer_id: Numeric customer ID (from get_customer result).
         from_date: Start date in YYYY-MM-DD. Empty string if not provided.
         to_date: End date in YYYY-MM-DD. Empty string if not provided.
         page: Page number. Default is 1.
-        limit: Number of ledger rows. Default is 10.
+        limit: Number of ledger rows. Default is 50.
         fields: Optional output columns.
         filters: Optional exact filters.
     """
