@@ -111,6 +111,29 @@ def _build_tool_embeddings():
         print(f"[WARN] Failed to build tool embeddings: {e}")
         _tool_embeddings.clear()
 
+ERP_AMBIGUOUS_THRESHOLD = 0.30
+_erp_domain_embedding: list[float] | None = None
+
+def _build_erp_domain_embedding() -> list[float]:
+    combined = " ".join(
+        f"{meta.get('description', '')} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
+        for meta in TOOL_INTENT_REGISTRY.values()
+    )
+    return embedding_model.embed_query(combined)
+
+def max_erp_similarity(query: str) -> float:
+    global _erp_domain_embedding
+    if _erp_domain_embedding is None:
+        try:
+            _erp_domain_embedding = _build_erp_domain_embedding()
+        except Exception:
+            return 0.0
+    try:
+        query_emb = embedding_model.embed_query(query)
+        return _cosine_sim(query_emb, _erp_domain_embedding)
+    except Exception:
+        return 0.0
+
 def log_token_usage(response, label: str):
     meta = getattr(response, "response_metadata", {}) or {}
     um = getattr(response, "usage_metadata", None) or {}

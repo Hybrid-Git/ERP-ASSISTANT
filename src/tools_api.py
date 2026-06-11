@@ -247,6 +247,8 @@ def apply_filters(records, filters=None):
 
     if skipped_fields:
         print(f"[FILTER] Skipped fields not found in response data: {skipped_fields}")
+        if record_fields:
+            print(f"[FILTER] Available response fields: {sorted(record_fields)}")
 
     if not usable_filters:
         if skipped_fields:

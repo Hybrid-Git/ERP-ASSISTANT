@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from src.schema import MainState
 from src.tool_doc import TOOL_INTENT_REGISTRY, CITY_WORDS
 from src.config import get_cfg
-from src.utils import parse_planner_json_blocks, normalize_text, TOOL_DOMAINS, PARTY_WORDS, NAME_WORDS, LIST_WORDS, INVOICE_TOOLS
+from src.utils import parse_planner_json_blocks, normalize_text, TOOL_DOMAINS, PARTY_WORDS, NAME_WORDS, LIST_WORDS, INVOICE_TOOLS, INVOICE_NO_PATTERNS
 from src.prompts import GST_CATEGORY_KEYWORDS
 
 
@@ -339,6 +339,24 @@ async def deterministic_final_node(state: MainState):
                 "matched_record": parsed["matched_record"],
                 "_invoice_target": parsed.get("_invoice_target", ""),
             }
+        elif tool_name in INVOICE_TOOLS and isinstance(parsed, dict) and parsed.get("data"):
+            recs = parsed["data"]
+            if isinstance(recs, list):
+                combined_q = f"{user_query or ''} {canonical_query or ''}".lower()
+                for rec in recs:
+                    if isinstance(rec, dict):
+                        rec_inv = rec.get("invoiceNo")
+                        if rec_inv and str(rec_inv).lower() in combined_q:
+                            parsed["_invoice_found"] = True
+                            parsed["matched_record"] = rec
+                            parsed["_invoice_target"] = str(rec_inv)
+                            invoice_matches[tool_name] = {
+                                "tool_name": tool_name,
+                                "matched_record": rec,
+                                "_invoice_target": str(rec_inv),
+                            }
+                            print(f"[INVOICE_MATCH] Auto-detected: {tool_name} matched invoice {rec_inv}")
+                            break
         if tool_name == "get_gst_summary":
             records = filter_gst_records_by_query(records, f"{user_query or ''} {canonical_query or ''}")
         if tool_name == "get_customer_ledger":
@@ -358,6 +376,8 @@ async def deterministic_final_node(state: MainState):
         recs = parsed.get("data", []) if isinstance(parsed, dict) else []
         if not isinstance(recs, list):
             recs = [recs]
+        if len(recs) > 10:
+            continue
         for rec in recs:
             if isinstance(rec, dict):
                 if rec.get("recordType") == "summary":
@@ -413,7 +433,17 @@ async def deterministic_final_node(state: MainState):
         data = apply_identifier_filter(data, identifiers)
     data = apply_final_postprocessing(data, user_query, canonical_query)
 
-    MAX_RECORDS = get_cfg("thresholds", "max_records", default=10)
+    combined_q = f"{user_query or ''} {canonical_query or ''}".lower()
+    show_all_keywords = {"show all", "show more", "sab dikhao", "saare dikhao",
+                         "all records", "all data", "sari records", "puri list",
+                         "poori list", "aur dikhao", "complete list", "sab batao",
+                         "saare batao", "sab records", "all customers", "all products",
+                         "all invoices", "all stock", "full list", "pura list",
+                         "dikhao", "haan dikhao", "ha dikhao", "show karo", "dikha do",
+                         "dikha dijiye", "haan", "hmm", "theek hai"}
+    wants_all = any(kw in combined_q for kw in show_all_keywords)
+
+    MAX_RECORDS = 200 if wants_all else get_cfg("thresholds", "max_records", default=10)
     truncation_info = {}
     for tool_name, records in data.items():
         if isinstance(records, list):

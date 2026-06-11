@@ -18,6 +18,8 @@ def _has_own_identifiers(query: str) -> bool:
         return True
     if any(re.search(p, q, re.IGNORECASE) for p in INVOICE_NO_PATTERNS):
         return True
+    if re.search(r'\b[A-Z][A-Z_&.\-]{3,}\b', q):
+        return True
     return False
 
 
@@ -29,6 +31,17 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
 
     if _has_own_identifiers(query):
         return query, []
+
+    entities = (conv_ctx or {}).get("entities", [])
+    q_lower_for_match = query.lower()
+    for ent in entities:
+        ent_name = ent.get("name", "")
+        if ent_name and ent_name.lower() in q_lower_for_match:
+            resolved = query
+            for p in found:
+                resolved = re.sub(rf'\b{re.escape(p)}\b', '', resolved, flags=re.IGNORECASE)
+            resolved = re.sub(r'\s+', ' ', resolved).strip()
+            return resolved, [{"original": p, "resolved": "(self-reference)", "type": "self_reference"} for p in found]
 
     is_plural = any(p in DONO_PRONOUNS for p in found)
     if not is_plural:
@@ -215,6 +228,8 @@ async def translator_node(state: MainState) -> MainState:
 
             canonical_query = data.get("canonical_query") or user_query
             language = data.get("language", "mixed")
+            if language == "hindi" and not re.search(r'[\u0900-\u097F]', user_query):
+                language = "hinglish"
             confidence = data.get("confidence", "medium")
             query_type = data.get("query_type", "")
             query_parts = data.get("query_parts") or []

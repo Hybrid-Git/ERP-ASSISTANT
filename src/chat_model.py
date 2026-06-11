@@ -110,6 +110,24 @@ def _build_memory_context(messages: list, max_exchanges: int = 3) -> str:
     return ""
 
 
+def _build_capability_text() -> str:
+    lines = []
+    seen = set()
+    for tname, meta in TOOL_INTENT_REGISTRY.items():
+        desc = meta.get("description", "")
+        if not desc:
+            continue
+        cleaned = re.sub(r"IMPORTANT:.*?(?:\.|;|$)", "", desc)
+        cleaned = re.sub(r"(Do|Use)\s+NOT.*?(?:\.|;|$)", "", cleaned)
+        cleaned = re.sub(r"(?:use|call)\s+`?\w+`?\s+(?:instead|to|first).*?(?:\.|;|$)", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(get|fetch|search)_\w+\b", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".,; ")
+        if cleaned and cleaned.lower() not in seen:
+            seen.add(cleaned.lower())
+            lines.append(f"- {cleaned}")
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     user_query: str,
     selected_tools: list[str],
@@ -161,7 +179,7 @@ def build_system_prompt(
                 lines.append("")
                 lines.append("--- KNOWN ENTITIES ---")
                 names = []
-                for e in entities[-3:]:
+                for e in entities[-1:]:
                     name = e.get("name", "")
                     id_ = e.get("id")
                     if id_ is not None:
@@ -252,6 +270,13 @@ async def chat_model_node(state: MainState):
                     "Keep it to 1-2 short sentences. Be warm, not robotic.\n"
                     "Do NOT mention tools, APIs, or technical details. "
                     "Speak in the same language the user used (English or Hinglish).\n"
+                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
+                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
+                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
+                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
+                     "CRITICAL: Always end your reply with a natural invitation like "
+                    "'What can I help you with?' or 'Kya dekhna chahenge aap?' "
+                    "or 'Batao, kya chahiye?'\n"
                     "/no_think"
                 )
                 try:
@@ -270,24 +295,26 @@ async def chat_model_node(state: MainState):
                 }
 
             if query_type == "capability":
-                tool_descriptions = []
-                for tname, tmeta in TOOL_INTENT_REGISTRY.items():
-                    desc = tmeta.get("description", "")
-                    aliases = tmeta.get("aliases", [])
-                    alias_str = ", ".join(aliases[:3])
-                    tool_descriptions.append(f"- {alias_str}: {desc}")
-                tools_text = "\n".join(tool_descriptions)
+                caps_text = _build_capability_text()
                 cap_prompt = (
                     "You are an ERP assistant. The user asked about what you can do.\n"
                     "Describe your capabilities conversationally, like a helpful human.\n"
-                    "Here are the tools/features available to you:\n"
-                    f"{tools_text}\n\n"
-                    "Explain in a natural, friendly way — not as a list of technical tools. "
+                    "Here are your capabilities — describe them naturally, NEVER mention tool names, API calls, or technical details:\n"
+                    f"{caps_text}\n\n"
+                    "Explain in a natural, friendly way — not as a list of technical features. "
                     "Say something like 'I can help you look up customers, check stock levels, "
-                    "view GST reports, find outstanding invoices, and more.' "
-                    "Keep it to 2-4 sentences. Be inviting and conversational. "
-                    "Speak in the same language as the user (English or Hinglish).\n"
-                    "Do NOT mention tool names, APIs, or technical details.\n"
+                    "view GST reports, find outstanding invoices, and much more.' "
+                    "Give specific examples of what you can do in each area. "
+                     "Keep it to 3-5 sentences. Be inviting and conversational. "
+                     "Speak in the same language as the user (English or Hinglish).\n"
+                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
+                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
+                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
+                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
+                     "Do NOT mention tool names, APIs, or technical details.\n"
+                     "CRITICAL: Always end your reply with a natural follow-up invitation like "
+                     "'What would you like me to look up?' or 'Kya aap kuch dekhna chahenge?' "
+                     "or 'Batao kya chahiye aapko?'\n"
                     "/no_think"
                 )
                 try:
@@ -305,18 +332,62 @@ async def chat_model_node(state: MainState):
                     "loop_count": loop_count + 1,
                 }
 
+            if query_type == "ambiguous":
+                caps_text = _build_capability_text()
+                ambig_prompt = (
+                    "You are an ERP assistant. The user asked for something but didn't specify what exactly.\n"
+                    "Don't refuse — instead describe what you CAN help with, and ask them to specify.\n"
+                    "Here are your capabilities — describe them naturally, NEVER mention tool names, API calls, or technical details:\n"
+                    f"{caps_text}\n\n"
+                    "Write 3-5 friendly, conversational sentences covering the main areas. "
+                    "Give specific examples of what you can do. "
+                    "Say something like: 'I can help with a lot of things! You can ask me about customers "
+                    "— I can search by name or city and get their details. I can check stock levels "
+                    "for any product or HSN code. I can show GST reports, outstanding invoices, "
+                     "sales summaries, and much more. What exactly would you like to look up?'\n"
+                     "Speak in the same language as the user (English or Hinglish).\n"
+                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
+                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
+                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
+                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
+                     "Do NOT mention tool names, APIs, or technical details.\n"
+                     "CRITICAL: Always end with a natural question asking what they want to look up.\n"
+                    "/no_think"
+                )
+                try:
+                    resp = await summary_llm.ainvoke([
+                        SystemMessage(content=ambig_prompt),
+                        HumanMessage(content=state.get("original_query", "")),
+                    ])
+                    reason = (getattr(resp, "content", "") or "").strip()
+                except Exception:
+                    reason = ("I can help you with customers, stock levels, GST reports, TDS/TCS, "
+                              "sales summaries, invoices, and more. What would you like me to look up?")
+                print(f"[CHAT MODEL] Ambiguous response: {reason}")
+                return {
+                    "messages": [HumanMessage(content=user_query), AIMessage(content=reason)],
+                    "memory_answer": reason,
+                    "loop_count": loop_count + 1,
+                }
+
             if query_type == "ood":
                 ood_prompt = (
                     "You are an ERP assistant. The user asked something OUTSIDE your domain.\n"
                     "CRITICAL: Do NOT answer the user's question. You do NOT have this information.\n"
-                    "Instead, politely refuse and say you can only help with ERP-related "
-                    "business queries (customers, stock, GST, TDS, TCS, invoices, sales, etc.).\n"
-                    "Example: 'Sorry, I can only assist with ERP-related queries like customers, stock, GST, and invoices.'\n"
+                    "Instead, politely refuse firmly and immediately redirect to what you CAN help with.\n"
+                    "Say something like: "
+                    "'Sorry, I can only help with business and accounting data — customers, stock, "
+                    "GST, invoices, sales, TDS/TCS, and similar. I cannot answer that. "
+                    "Is there something specific you'd like to check in your business data?'\n"
                     "Be friendly — don't sound robotic or defensive. "
-                    "Suggest what you CAN help with. "
-                    "Keep it to 1-2 short sentences. "
+                    "Keep it to 2-3 short sentences. "
                     "Speak in the same language as the user (English or Hinglish).\n"
-                    "Do NOT answer the question. Do NOT provide any information about the topic.\n"
+                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
+                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
+                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
+                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
+                    "CRITICAL: Do NOT answer the question. Do NOT provide any information about the asked topic.\n"
+                    "Always end with a redirect to what you CAN help with.\n"
                     "/no_think"
                 )
                 try:
@@ -710,6 +781,16 @@ async def chat_model_node(state: MainState):
         needs_date_clarification = []
 
         def _repair_tool_call(name: str, args: dict) -> dict | None:
+            # Unwrap tool/parameters wrapper format (Qwen non-standard tool call format)
+            if "parameters" in args and isinstance(args["parameters"], dict):
+                if "tool" in args and isinstance(args["tool"], str):
+                    name = TOOL_NAME_ALIASES.get(args["tool"], args["tool"])
+                args = args["parameters"]
+            elif "arguments" in args and isinstance(args["arguments"], dict):
+                if "tool" in args and isinstance(args["tool"], str):
+                    name = TOOL_NAME_ALIASES.get(args["tool"], args["tool"])
+                args = args["arguments"]
+
             name = TOOL_NAME_ALIASES.get(name, name)
             if name not in tools_dict:
                 return None
@@ -726,6 +807,18 @@ async def chat_model_node(state: MainState):
                 if result.get("_needs_date_range"):
                     needs_date_clarification.append(result["name"])
                     return None
+                # Move unknown params into filters (LLM often passes filter fields at top level)
+                rargs = result["args"]
+                schema = tools_dict[name].args_schema
+                valid_params = set(schema.model_fields.keys()) if schema and hasattr(schema, 'model_fields') else set()
+                unknown_params = {k: v for k, v in list(rargs.items()) if k not in valid_params}
+                if unknown_params:
+                    for k in unknown_params:
+                        rargs.pop(k, None)
+                    existing_filters = rargs.get("filters", {}) or {}
+                    existing_filters.update(unknown_params)
+                    rargs["filters"] = existing_filters
+                    print(f"[PARAM-TO-FILTERS] {name}: moved unknown params into filters: {unknown_params}")
                 result["args"] = _strip_unknown_params(name, result["args"])
                 # Normalize filter values and search params
                 rargs = result["args"]

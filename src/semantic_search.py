@@ -8,9 +8,11 @@ from src.utils import (
     _cosine_sim, _build_tool_embeddings, _tool_embeddings,
     normalize_text, add_unique, TH_EMBEDDING_RECALL_MIN, TH_RERANKER_TOP_K,
     CONNECTORS, ROUTE_KEYWORDS, DOMAIN_KEYWORDS, INVOICE_PATTERNS, TOOL_DOMAINS,
+    ERP_AMBIGUOUS_THRESHOLD, max_erp_similarity,
 )
 from src.tools_api import tools_dict
-from src.prompts import META_QUESTION_PATTERNS_GLOBAL, GREETING_PATTERNS, CAPABILITY_PATTERNS, OOD_PATTERNS, _STOP_WORDS
+from langchain_core.messages import AIMessage
+from src.prompts import META_QUESTION_PATTERNS_GLOBAL, GREETING_PATTERNS, CAPABILITY_PATTERNS, OOD_TOPICS, _STOP_WORDS, VAGUE_ACTION_WORDS
 
 
 def classify_domains(query: str, resolved_entities: list | None = None) -> tuple[set[str], set[str]]:
@@ -151,6 +153,58 @@ def _filter_for_list_intent(part: str, tools: list[str]) -> list[str]:
     return filtered
 
 
+def _matches_ood_topic(query: str) -> bool:
+    q = query.lower().strip()
+    if not q:
+        return False
+    for topic, keywords in OOD_TOPICS.items():
+        for kw in keywords:
+            if re.search(rf"(?<!\w){re.escape(kw.lower())}(?!\w)", q):
+                print(f"[OOD_TOPIC] Matched topic '{topic}' via keyword '{kw}' in: {q[:60]}")
+                return True
+    return False
+
+
+_ALL_DOMAIN_WORDS: set[str] | None = None
+
+def _get_all_domain_words() -> set[str]:
+    global _ALL_DOMAIN_WORDS
+    if _ALL_DOMAIN_WORDS is not None:
+        return _ALL_DOMAIN_WORDS
+    words = set()
+    for kw in ROUTE_KEYWORDS:
+        for w in kw.lower().split():
+            words.add(w)
+    for meta in TOOL_INTENT_REGISTRY.values():
+        for kw in meta.get("keywords", []):
+            for w in kw.lower().split():
+                words.add(w)
+        for alias in meta.get("aliases", []):
+            for w in alias.lower().split():
+                words.add(w)
+    for domain_kws in DOMAIN_KEYWORDS.values():
+        for kw in domain_kws:
+            for w in kw.lower().split():
+                words.add(w)
+    _ALL_DOMAIN_WORDS = words
+    return words
+
+
+def _has_domain_content(parts: list[str]) -> bool:
+    domain_words = _get_all_domain_words()
+    for part in parts:
+        part_lower = part.lower()
+        tokens = set(re.findall(r'[a-z0-9]+', part_lower))
+        content_tokens = tokens - VAGUE_ACTION_WORDS - _STOP_WORDS
+        if content_tokens & domain_words:
+            return True
+        for pat_list in INVOICE_PATTERNS.values():
+            for pat in pat_list:
+                if re.search(pat, part, re.IGNORECASE):
+                    return True
+    return False
+
+
 @traceable(name="semantic_search_node", run_type="retriever")
 async def semantic_search(state: MainState) -> MainState:
     try:
@@ -184,48 +238,61 @@ async def semantic_search(state: MainState) -> MainState:
         print(f"Query parts for metadata matching: {query_parts}")
 
         query_type = (state.get("query_type") or "").strip()
-        if query_type == "conversational":
-            full_query = re.sub(r"[,/;:.!?]+", " ", original_query.strip().lower())
-            full_query = re.sub(r"\s+", " ", full_query).strip()
-            if any(re.match(p, full_query) for p in GREETING_PATTERNS):
-                print(f"Translator misclassified greeting as conversational: {user_query}")
-            else:
-                print(f"Translator flagged as conversational — no tool needed: {user_query}")
-                return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
 
-        if query_type == "ood":
-            print(f"Translator flagged as out-of-domain — no tool needed: {user_query}")
-            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "ood"}
+        full_query = re.sub(r"[,/;:.!?]+", " ", original_query.strip().lower())
+        full_query = re.sub(r"\s+", " ", full_query).strip()
 
-        full_meta = any(
+        canonical_lower = (canonical_query or "").strip().lower()
+        canonical_clean = re.sub(r"[,/;:.!?]+", " ", canonical_lower).strip() if canonical_lower else ""
+        is_greeting = any(re.match(p, full_query) for p in GREETING_PATTERNS) or (
+            canonical_clean and any(re.match(p, canonical_clean) for p in GREETING_PATTERNS)
+        )
+        is_capability = any(re.search(p, full_query, re.IGNORECASE) for p in CAPABILITY_PATTERNS) or (
+            canonical_clean and any(re.search(p, canonical_clean, re.IGNORECASE) for p in CAPABILITY_PATTERNS)
+        )
+        is_meta = any(
             any(re.search(p, q, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL)
             for q in [original_query, canonical_query] if q
         )
-        is_pure_meta = full_meta or (
+        is_pure_meta = is_meta or (
             len(query_parts) > 0 and all(
                 any(re.search(p, part, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL)
                 for part in query_parts
             )
         )
-        if is_pure_meta:
-            print(f"Meta-question detected — no tool needed: {user_query}")
-            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
 
-        full_query = re.sub(r"[,/;:.!?]+", " ", original_query.strip().lower())
-        full_query = re.sub(r"\s+", " ", full_query).strip()
-        is_greeting = any(re.match(p, full_query) for p in GREETING_PATTERNS)
+        # Greeting/capability/meta regex patterns take priority over translator's query_type
         if is_greeting:
             has_erp_keywords = any(kw in full_query for kw in ROUTE_KEYWORDS)
             if not has_erp_keywords:
                 print(f"Greeting detected — routing to LLM for natural response: {user_query}")
                 return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "greeting"}
 
-        is_capability = any(re.search(p, full_query, re.IGNORECASE) for p in CAPABILITY_PATTERNS)
         if is_capability:
             has_erp_keywords = any(kw in full_query for kw in ROUTE_KEYWORDS)
             if not has_erp_keywords:
                 print(f"Capability query detected — routing to LLM: {user_query}")
                 return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "capability"}
+
+        if is_pure_meta:
+            print(f"Meta-question detected — no tool needed: {user_query}")
+            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
+
+        if query_type == "conversational":
+            print(f"Translator flagged as conversational — no tool needed: {user_query}")
+            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
+
+        if query_type == "ood":
+            print(f"Translator flagged as out-of-domain — no tool needed: {user_query}")
+            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "ood"}
+
+        # Domain-content check — skip tool selection for vague queries
+        # that consist only of generic action words (list, show, batao, etc.)
+        # without any domain-specific noun (customer, stock, invoice, etc.)
+        # Always route to ambiguous handler — do not reuse previous tools.
+        if query_type in ("", "unknown", "general") and not _has_domain_content(query_parts):
+            print(f"No domain content detected — routing to ambiguous handler: {user_query}")
+            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "ambiguous"}
 
         selected_tool_groups: list[list[str]] = []
         resolved_entities = state.get("resolved_entities", [])
@@ -357,36 +424,50 @@ async def semantic_search(state: MainState) -> MainState:
                 "skip_router": True,
             }
 
-        raw_queries = [q for q in [original_query, canonical_query] if q]
-        has_erp_kw = any(kw in (original_query or "").lower() for kw in ROUTE_KEYWORDS)
-        is_ood = (not has_erp_kw and any(
-            any(re.search(p, q.strip().lower()) for p in OOD_PATTERNS) for q in raw_queries
-        ))
-        if is_ood:
-            print(f"Out-of-domain question detected: {user_query}")
-        else:
-            messages = state.get("messages", [])
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                    for tc in msg.tool_calls:
-                        tool_name = tc.get("name")
-                        if tool_name and tool_name in tools_dict:
-                            print(f"Using tool from conversation history: {tool_name}")
-                            selected_tools = [tool_name]
-                            return {
-                                "retrieved_tools": selected_tools,
-                                "selected_tools": selected_tools,
-                                "query_parts": query_parts,
-                                "skip_router": True,
-                            }
+        # Before marking OOD, check if query has ERP context from conversation history
+        messages = state.get("messages", [])
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    tool_name = tc.get("name")
+                    if tool_name and tool_name in tools_dict:
+                        print(f"Using tool from conversation history: {tool_name}")
+                        selected_tools = [tool_name]
+                        return {
+                            "retrieved_tools": selected_tools,
+                            "selected_tools": selected_tools,
+                            "query_parts": query_parts,
+                            "skip_router": True,
+                        }
 
-        print("No confident tool match. Marking query out-of-domain.")
+        # Check OOD topics as negative filter (clearly non-ERP content)
+        raw_queries = [q for q in [original_query, canonical_query] if q]
+        is_ood = any(_matches_ood_topic(q) for q in raw_queries)
+
+        if not is_ood:
+            # Use semantic similarity against ERP domain embedding for ambiguous vs OOD
+            erp_sim = max_erp_similarity(user_query)
+            print(f"[ERP SIMILARITY] domain similarity: {erp_sim:.3f} (threshold: {ERP_AMBIGUOUS_THRESHOLD})")
+            if erp_sim < ERP_AMBIGUOUS_THRESHOLD:
+                is_ood = True
+
+        if is_ood:
+            print(f"Marking query as out-of-domain: {user_query}")
+            return {
+                "retrieved_tools": [],
+                "selected_tools": [],
+                "query_parts": query_parts,
+                "skip_router": True,
+                "query_type": "ood",
+            }
+
+        print(f"ERP-adjacent but underspecified — routing to ambiguous handler: {user_query}")
         return {
             "retrieved_tools": [],
             "selected_tools": [],
             "query_parts": query_parts,
             "skip_router": True,
-            "query_type": "ood",
+            "query_type": "ambiguous",
         }
 
     except Exception as e:

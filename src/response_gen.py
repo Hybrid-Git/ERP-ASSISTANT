@@ -4,7 +4,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
-from src.utils import TOOL_DOMAINS
+from src.utils import LIST_WORDS, TOOL_DOMAINS
 from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
 
@@ -35,6 +35,38 @@ def _clean_llm_response(text: str) -> str:
     if not text or not text.strip("` \n\r"):
         return ""
     return text
+
+
+def _strip_hallucinated_values(text: str, tool_data: dict, original_query: str = "") -> str:
+    actual_fields = set()
+    for _tool_name, records in tool_data.items():
+        if isinstance(records, list):
+            for rec in records:
+                if isinstance(rec, dict):
+                    for k in rec:
+                        actual_fields.add(k.lower())
+    if not actual_fields:
+        return text
+    query_tokens = set(re.findall(r'\b\w+\b', original_query.lower()))
+    field_like = re.compile(r'\b[a-z]+[A-Z][a-zA-Z]*\b|\b[A-Z][a-z]+[A-Z][a-zA-Z]*\b|\b[a-zA-Z]+_[a-zA-Z]+\b')
+    sentences = re.split(r'(?<=[.!?।])\s+', text)
+    cleaned = []
+    for sent in sentences:
+        if not sent.strip():
+            continue
+        words = set(m.group(0).lower() for m in field_like.finditer(sent))
+        hallucinated = any(
+            w not in actual_fields and w not in query_tokens
+            for w in words
+        )
+        if hallucinated:
+            print(f"[HALLUCINATION] Stripped sentence containing invented field(s): {words - actual_fields} | sentence: {sent.strip()[:100]}")
+        else:
+            cleaned.append(sent)
+    result = " ".join(cleaned).strip()
+    if not result:
+        print(f"[HALLUCINATION] All sentences stripped — returning empty")
+    return result
 
 
 @traceable(name="response_generation_node", run_type="chain")
@@ -74,6 +106,11 @@ async def response_generation_node(state: MainState):
     previous_summary = state.get("summary", "") or ""
     conversation_context = state.get("conversation_context", {})
 
+    list_mode = bool(re.search(
+        r'\b(' + '|'.join(re.escape(w) for w in LIST_WORDS) + r')\b',
+        original_query, re.IGNORECASE
+    ))
+
     system_prompt = (
         "You are an ERP assistant. Write a SHORT natural conversational reply using ONLY the tool results below.\n"
         "\n"
@@ -100,7 +137,7 @@ async def response_generation_node(state: MainState):
     if conversation_context:
         entities = conversation_context.get("entities", [])
         if entities:
-            system_prompt += f"KNOWN ENTITIES:\n{json.dumps(entities, indent=2, ensure_ascii=False)}\n\n"
+            system_prompt += f"KNOWN ENTITIES:\n{json.dumps(entities[-3:], indent=2, ensure_ascii=False)}\n\n"
     if detected_language == "hinglish":
         system_prompt += (
             "1. LANGUAGE: The user wrote in Hinglish (Hindi words written with English letters).\n"
@@ -117,7 +154,17 @@ async def response_generation_node(state: MainState):
         )
     elif detected_language == "hindi":
         system_prompt += (
-            "1. LANGUAGE: The user wrote in Hindi (Devanagari script). Reply in Hindi Devanagari.\n"
+            "1. LANGUAGE: The user wrote in Hindi. Reply in Hinglish (Hindi words with English letters).\n"
+            "   Your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation (. , ? !).\n"
+            "   Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters.\n"
+            "   Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
+            "   Use the exact same words the user used when possible.\n"
+            "\n"
+            "EXAMPLE:\n"
+            "  User: muje customer details chaie\n"
+            "  Tool result: Customer name: Rohan\n"
+            "  Correct reply: aapke customer Rohan hai\n"
+            "  WRONG: आपके ग्राहक रोहन हैं (NO Devanagari at all)\n"
         )
     else:
         system_prompt += (
@@ -179,13 +226,18 @@ async def response_generation_node(state: MainState):
         "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
         "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
         "not the GST category breakdown.\n"
-        "14. LIST TRUNCATION — CRITICAL: If the user's query is a broad list (not a specific lookup) "
-        "and truncation_info is present showing fewer records than total, you MUST in your FIRST response "
-        "tell the user 'Showing first X of Y records. Add a filter like date range, party name, city, "
-        "or status to narrow down.' This is MANDATORY — never skip this. "
-        "DO NOT attempt analysis, recommendations, or summaries based on partial data.\n"
-        "    CORRECT: 'Showing first 10 of 854 products. Add a filter like product name to narrow down.'\n"
-        "    WRONG: 'Here are 10 products: ...' (no truncation message)\n"
+         "14. LIST TRUNCATION — CONVERSATIONAL: When truncation_info shows more records exist "
+         "than shown, just mention the total count naturally and ask if they want to see some. "
+         "Do NOT list any individual records when total > 10 — "
+         "just say how many were found and offer. "
+         "When total <= 10, show 2-3 records as a short sample then offer the rest. "
+         "Vary your phrasing each time — never repeat the same sentence pattern. "
+         "Do NOT say 'Add a filter' — the user didn't ask for that.\n"
+         "    EXAMPLES:\n"
+         "      'B2C_PUNJAB ke 293 outstanding ITEM invoices hain. Kuch dikhaun?'\n"
+         "      'That's the first 5 of 120. Want to see the rest?'\n"
+         "      'Aapke 27 records hain. Dikhaun?'\n"
+         "    WRONG: 'Showing first 10 of 854. Add a filter.' (too robotic)\n"
         "15. FIELD DISPLAY RULES:\n"
         "    - For list queries (default): show max 5 most important fields per record. "
         "Pick the 5 fields most relevant to the user's question (e.g. id, name, "
@@ -194,22 +246,46 @@ async def response_generation_node(state: MainState):
         "    - When the user asks for 'all details' / 'sabhi detail' / 'full info' / "
         "'sara detail' (already covered by rule 11): show EVERY field — this overrides "
         "the 5-field limit completely.\n"
-        "/no_think\n"
+        "16. NEVER output Python code, SQL, or any code. "
+         "NEVER invent field names or values not present in TOOL RESULTS. "
+         "NEVER write 'Key Observations', 'Next Steps', 'Data Validation', "
+         "'Potential Use Cases', 'Sample Records', or any section headings — "
+         "just answer conversationally and stop.\n"
+          "17. CRITICAL — You can ONLY see the records shown in TOOL RESULTS. "
+          "If more records exist (truncation_info mentions them), you may say so "
+          "and offer to show them, but you MUST NOT describe, summarize, or invent "
+          "ANY data for records beyond what you can actually see. "
+          "No totals, no aggregates, no 'sabse zyada' or 'sabse kam' — "
+          "only what is directly visible in TOOL RESULTS. "
+          "If asked to 'show more', say you need to fetch them first.\n"
+          "18. CONVERSATIONAL ENDING — Always end your reply with a natural follow-up "
+          "invitation like 'Anything else?' or 'Kuch aur?' or 'Aur kya dekhna hai?' "
+          "unless the user's query was a direct command, a simple yes/no answer, "
+          "or a request that clearly does not invite follow-up (like 'thank you', 'ok', 'bye'). "
+          "Do NOT force it when it feels unnatural.\n"
+           "/no_think\n"
     )
+    if list_mode:
+        system_prompt += (
+            "19. LIST MODE — The user asked for a list or multiple records. "
+            "Format each record as a bullet point ('- '). "
+            "Show max 1-2 most relevant fields per record (e.g. just name, or name + outstanding). "
+            "After the bullets, naturally mention the total count and ask if they want to see more.\n"
+            "    Example:\n"
+            "      - Masjid To Churchgate\n"
+            "      - Vasai-Dahisar\n"
+            "      - Ranjeet\n\n"
+            "      Ye 100 records mein se 10 hain. Aur dikhaun?\n"
+            "    If 0 records found, just say 'kuch nahi mila' — no bullets.\n"
+        )
 
-    SAFETY_MAX_RECORDS = 15
     final_response_prompt = dict(final_response)
-    final_response_prompt.pop("truncation_info", None)
+    truncation_info = final_response_prompt.pop("truncation_info", {}) or {}
     summary_text = final_response_prompt.pop("summary", "") or ""
+    final_response_prompt.pop("tools_used", None)
+    summary_text = re.sub(r'^[^:]+:\s*', '', summary_text)
+    summary_text = re.sub(r'; [^:]+:\s*', '; ', summary_text)
     data = final_response_prompt.get("data", {})
-    if isinstance(data, dict):
-        truncated = {}
-        for tool_name, records in data.items():
-            if isinstance(records, list) and len(records) > SAFETY_MAX_RECORDS:
-                truncated[tool_name] = records[:SAFETY_MAX_RECORDS]
-            else:
-                truncated[tool_name] = records
-        final_response_prompt["data"] = truncated
 
     doc_type = (state.get("document_type", "") or "").lower()
     if doc_type == "general":
@@ -218,7 +294,7 @@ async def response_generation_node(state: MainState):
         if is_follow_up:
             customer_vendor_domains = {"customer", "vendor"}
             filtered = {}
-            for tool_name, records in truncated.items():
+            for tool_name, records in data.items():
                 td = set(TOOL_DOMAINS.get(tool_name, []))
                 if td & customer_vendor_domains:
                     filtered[tool_name] = records
@@ -239,20 +315,58 @@ async def response_generation_node(state: MainState):
             filtered_data = {matched_tool: final_response_prompt["data"][matched_tool]}
             final_response_prompt["data"] = filtered_data
             summary_text = make_summary(filtered_data, [])
+            summary_text = re.sub(r'^[^:]+:\s*', '', summary_text)
+            summary_text = re.sub(r'; [^:]+:\s*', '; ', summary_text)
     final_response_prompt.pop("summary", None)
     final_response_prompt.pop("_invoice_match", None)
+    data = final_response_prompt.get("data", {})
 
-    truncation_info = final_response.get("truncation_info", {}) or {}
+    MAX_SAMPLE = 20 if detail_mode else (10 if list_mode else 5)
+    for tool_name, records in data.items():
+        if isinstance(records, list) and len(records) > MAX_SAMPLE:
+            data[tool_name] = records[:MAX_SAMPLE]
+
+    # Sync truncation_info shown count with actual data after further truncation
+    if truncation_info:
+        for tool_name in truncation_info:
+            tool_records = data.get(tool_name, [])
+            if isinstance(tool_records, list):
+                truncation_info[tool_name]["shown"] = len(tool_records)
     truncation_note = ""
     if truncation_info:
         total = sum(v.get("total", 0) for v in truncation_info.values())
         shown = sum(v.get("shown", 0) for v in truncation_info.values())
-        truncation_note = f"\nTRUNCATION: Showing {shown} of {total} total records. Suggest a filter.\n"
+        remaining = total - shown
+        truncation_note = f"\nMORE RECORDS AVAILABLE: {shown} shown out of {total}. {remaining} more available. Ask conversationally if user wants more.\n"
+
+    TOOL_KEY_MAP = {
+        "get_customer": "customers",
+        "get_sales_invoice": "sales_invoices",
+        "get_purchase_invoice": "purchase_invoices",
+        "get_stock_levels": "stock_levels",
+        "get_gst_summary": "gst_summary",
+        "get_sales_summary": "sales_summary",
+        "get_purchase_summary": "purchase_summary",
+        "get_sales_trend": "sales_trend",
+        "get_trial_balance": "trial_balance",
+        "get_top_customer": "top_customers",
+        "get_item_details": "items",
+        "search_ledger": "ledger_matches",
+    }
+    tool_data = final_response_prompt.get("data", {})
+    if isinstance(tool_data, dict):
+        renamed = {}
+        for tool_name, records in tool_data.items():
+            domain_key = TOOL_KEY_MAP.get(tool_name, tool_name.replace("get_", "", 1))
+            renamed[domain_key] = records
+        final_response_prompt["data"] = renamed
 
     detail_note = "\nDETAIL MODE: Show EVERY field of each record.\n" if detail_mode else ""
 
     human_prompt = (
         f"USER QUERY:\n{original_query}\n\n"
+        f"CRITICAL — Only use field names and values that are present in TOOL RESULTS below. "
+        f"Do NOT invent any field name, ID, or value.\n"
         f"TOOL RESULTS (JSON):\n{json.dumps(final_response_prompt, indent=2, ensure_ascii=False)}\n\n"
     )
     if summary_text:
@@ -271,6 +385,11 @@ async def response_generation_node(state: MainState):
         if not response_text:
             raise ValueError("Empty response from LLM")
         response_text = _clean_llm_response(response_text)
+        response_text = _strip_hallucinated_values(
+            response_text,
+            final_response_prompt.get("data", {}),
+            original_query=original_query,
+        )
         if not response_text.strip():
             raise ValueError("Response had only meta-framing/JSON after cleaning")
         data = final_response.get("data", {})

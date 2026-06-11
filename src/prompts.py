@@ -53,6 +53,8 @@ GREETING_PATTERNS = [
     r"^(kaise\s+ho|kya\s+haal|kya\s+kar\s+rahe|kya\s+kar\s+raha|kya\s+kar\s+rahi)\s*[!?.]*$",
     r"^(aap|ap|tu|tum|tumlog)\s+kaise\s+ho\s*[!?.]*$",
     r"^(aap|ap)\s+kese\s+ho\s*[!?.]*$",
+    r"^(tu|tum)\s+kais[ea]\s+(hai|ho)\s*[!?.]*$",
+    r"^(aap|ap)\s+kais[ea]\s+(hain|hai|ho)\s*[!?.]*$",
     r"^(hello|hi|hey|hii|hiii|heyy|holla)\s+how\s+(are|r)\s+(you|u)\s*[!?.]*$",
     r"^(hello|hi|hey|hii|hiii|heyy|holla)\s+(how's|how is)\s+(it|everyone|you|things|going)\s*[!?.]*$",
 ]
@@ -73,12 +75,31 @@ CAPABILITY_PATTERNS = [
     r"aap kya kar sakte hain",
     r"ye (kya|kaisa) (hai|tool|chatbot)",
     r"aap (kya|kaise) (help|madad|sahayta) kar (sakte|sakta)",
+    r"(aap|tu|tum) kya (kar sakta|kar sakte|kar sakti)",
+    r"batao (aap|tu|tum) kya kar sakte ho",
+    r"kya karte ho",
+    r"(aap|ap|tu|tum) kya (kaam|help) kar sakte ho",
+    r"what services do you offer",
+    r"what features (do|does) (you|this) have",
+    r"(list|show) (me |your )?(features|capabilities|services)",
+    r"(aap|tu|tum|ap) (muze|mujhe|hume|humko|hamko|ko) kya (de|provide|dete|de sakte|de sakta)",
+    r"kya (de|provide|dete) (kar |)(sakte|sakta|sakti) ho",
+    r"kya de sakte ho",
+    r"kya (karta|karti) (hai|ho)",
+
+    r"(aap|tu|tum) kya (provide|de) (kar sakte|kar sakta|karte ho)",
+    r"(aap|tu|tum) (kya|kaunse) (product|service|feature|suvidha) (de sakte|provide kar sakte|dete)",
+    r"(kya|kaunsi|kaunse) (cheeze|cheezein|services|facilities|features) (hai|hain|provide karte)",
 ]
 
-OOD_PATTERNS = [
-    r"^(who|what|why|when|where|how)\s+(is|are|was|were|does|do|did|can|could|will|would|shall|should)\s+",
-    r"(tell me about|explain|describe|define)\s",
-]
+# Minimal OOD topic safety net — catches clearly non-ERP queries missed by embedding similarity
+OOD_TOPICS = {
+    "movies_entertainment": ["movie", "film", "cinema", "actor", "bollywood", "hollywood", "netflix", "song"],
+    "sports": ["cricket", "football", "hockey", "ipl", "world cup", "player", "match", "khel"],
+    "weather": ["weather", "temperature", "rain", "forecast", "mausam", "barish"],
+    "food": ["recipe", "cook", "khana", "food", "ingredients", "restaurant"],
+    "general_knowledge": ["capital of", "population of", "president of", "prime minister of", "history of"],
+}
 
 HINGLISH_PRONOUNS = ["uska", "iska", "unka", "iski", "inki", "uski", "woh", "uss", "in sab", "dono", "in dono", "ye dono", "in dono ko"]
 DONO_PRONOUNS = {"dono", "in dono", "ye dono", "in dono ko"}
@@ -117,6 +138,29 @@ _STOP_WORDS = {
     "theirs", "themselves", "what", "which", "who", "whom",
     "ka", "ke", "ki", "ko", "se", "mai", "mein", "hai", "ho",
     "hu", "hain", "tha", "the", "thi", "thay", "hoga",
+}
+
+# Words that indicate a vague/help-seeking intent without specifying a domain
+# When a query consists ONLY of these + stop words, route to ambiguous handler
+VAGUE_ACTION_WORDS = {
+    "list", "lists", "listing",
+    "show", "shows", "showing",
+    "tell", "tells", "telling",
+    "give", "gives", "giving",
+    "get", "gets", "getting",
+    "fetch", "fetches", "fetching",
+    "find", "finds", "finding",
+    "search", "searches", "searching",
+    "details", "detail",
+    "batao", "bata", "batavo", "batana",
+    "dikhao", "dikha", "dikhaao", "dakhva", "dakhvo",
+    "do", "kar", "karo", "karde", "karta", "karte", "karti",
+    "kuch", "something",
+    "de", "dete",
+    "provide", "provides", "providing",
+    "help", "helps", "helping", "madad", "sahayta",
+    "sab", "saare", "sare", "saari", "sari", "sabhi", "poora", "saara",
+    "all", "every", "everything",
 }
 
 GST_CATEGORY_KEYWORDS = {
