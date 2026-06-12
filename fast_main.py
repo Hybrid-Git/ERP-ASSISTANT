@@ -580,6 +580,7 @@ async def chat_stream(request: ChatRequest):
         response_text = None
         stream_data = {}
         tokens_emitted = False
+        in_think_block = False
 
         try:
             try:
@@ -598,7 +599,24 @@ async def chat_stream(request: ChatRequest):
                         chunk = event["data"]["chunk"]
                         if isinstance(chunk, AIMessageChunk) and chunk.content:
                             tokens_emitted = True
-                            yield f"data: {json.dumps({'token': chunk.content})}\n\n"
+                            token_text = chunk.content
+                            if isinstance(token_text, str):
+                                while token_text:
+                                    if not in_think_block:
+                                        idx = token_text.find("<think>")
+                                        if idx == -1:
+                                            yield f"data: {json.dumps({'token': token_text})}\n\n"
+                                            break
+                                        if idx > 0:
+                                            yield f"data: {json.dumps({'token': token_text[:idx]})}\n\n"
+                                        token_text = token_text[idx + 7:]
+                                        in_think_block = True
+                                    if in_think_block:
+                                        idx = token_text.find("</think>")
+                                        if idx == -1:
+                                            break
+                                        token_text = token_text[idx + 8:]
+                                        in_think_block = False
 
                     elif kind == "on_chain_end":
                         name = event.get("name", "")

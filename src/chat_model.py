@@ -111,9 +111,6 @@ def _build_memory_context(messages: list, max_exchanges: int = 3) -> str:
 
 
 def _build_capability_text() -> str:
-    global _CACHED_CAPABILITY_TEXT
-    if _CACHED_CAPABILITY_TEXT:
-        return _CACHED_CAPABILITY_TEXT
     lines = []
     seen = set()
     for tname, meta in TOOL_INTENT_REGISTRY.items():
@@ -128,9 +125,7 @@ def _build_capability_text() -> str:
         if cleaned and cleaned.lower() not in seen:
             seen.add(cleaned.lower())
             lines.append(f"- {cleaned}")
-
-    _CACHED_CAPABILITY_TEXT = "\n".join(lines) 
-    return _CACHED_CAPABILITY_TEXT
+    return "\n".join(lines)
 
 def build_system_prompt(
     user_query: str,
