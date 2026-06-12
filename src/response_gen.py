@@ -4,7 +4,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
-from src.utils import LIST_WORDS, TOOL_DOMAINS
+from src.utils import LIST_WORDS, TOOL_DOMAINS,strip_think_tags
 from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
 
@@ -384,7 +384,7 @@ async def response_generation_node(state: MainState):
         ]):
             if hasattr(chunk, "content") and chunk.content:
                 full_content += chunk.content
-        response_text = full_content.strip()
+        response_text = strip_think_tags(full_content.strip())
         if not response_text:
             raise ValueError("Empty response from LLM")
         response_text = _clean_llm_response(response_text)

@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 from langsmith import traceable
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage,ToolMessage
 from src.schema import MainState
 from src.tools_api import tools_dict
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
@@ -11,7 +11,7 @@ from src.config import llm, summary_llm
 from src.utils import (
     now, sec, log_token_usage, print_ollama_metadata, sanitize_tool_filters,
     TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
-    extract_date_range_for_tool,
+    extract_date_range_for_tool,strip_think_tags
 )
 from src.semantic_search import classify_domains
 from src.prompts import META_QUESTION_PATTERNS_GLOBAL, _REFERENCE_PATTERN
@@ -284,7 +284,7 @@ async def chat_model_node(state: MainState):
                         SystemMessage(content=greeting_prompt),
                         HumanMessage(content=state.get("original_query", "")),
                     ])
-                    reason = (getattr(resp, "content", "") or "").strip()
+                    reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
                     reason = "Hello! How can I help you with your ERP data today?"
                 print(f"[CHAT MODEL] Greeting response: {reason}")
@@ -322,7 +322,7 @@ async def chat_model_node(state: MainState):
                         SystemMessage(content=cap_prompt),
                         HumanMessage(content=state.get("original_query", "")),
                     ])
-                    reason = (getattr(resp, "content", "") or "").strip()
+                    reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
                     reason = "I can help you with customer details, stock levels, GST reports, TDS/TCS, sales summaries, invoices, and more. Just ask!"
                 print(f"[CHAT MODEL] Capability response: {reason}")
@@ -359,7 +359,7 @@ async def chat_model_node(state: MainState):
                         SystemMessage(content=ambig_prompt),
                         HumanMessage(content=state.get("original_query", "")),
                     ])
-                    reason = (getattr(resp, "content", "") or "").strip()
+                    reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
                     reason = ("I can help you with customers, stock levels, GST reports, TDS/TCS, "
                               "sales summaries, invoices, and more. What would you like me to look up?")
@@ -395,7 +395,7 @@ async def chat_model_node(state: MainState):
                         SystemMessage(content=ood_prompt),
                         HumanMessage(content=state.get("original_query", "")),
                     ])
-                    reason = (getattr(resp, "content", "") or "").strip()
+                    reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
                     reason = "I'm an ERP assistant — I can help with customers, stock, GST, TDS, invoices, and sales data. Could you ask about any of these?"
                 print(f"[CHAT MODEL] OOD response: {reason}")
@@ -450,7 +450,7 @@ async def chat_model_node(state: MainState):
                         SystemMessage(content=mem_prompt),
                         HumanMessage(content=user_query),
                     ])
-                    reason = (getattr(mem_resp, "content", "") or "").strip()
+                    reason = strip_think_tags((getattr(mem_resp, "content", "") or "").strip())
                 except Exception as e:
                     print(f"[CHAT MODEL] Memory LLM error: {e}")
                     reason = state.get("unsupported_reason", "I can only answer ERP-related queries about customers, stock, GST, TDS, and TCS. Please ask a relevant business question.")
@@ -483,6 +483,24 @@ async def chat_model_node(state: MainState):
             msg for msg in state.get("messages", [])
             if not isinstance(msg, SystemMessage)
         ]
+        # keeps last 6 messages for conversation context
+        if len(chat_history) > 6:
+            print(f"[TRIM] Truncating chat history from {len(chat_history)} to last 6 messages")
+            # Keep a summary context message if available
+            if summary:
+                chat_history = [SystemMessage(content=f"Previous conversation summary: {summary[:500]}")] + chat_history[-6:]
+            else:
+                chat_history = chat_history[-6:]
+        for i, msg in enumerate(chat_history):
+            if msg.type == "tool" and len(msg.content)>200:
+                tool_name = msg.name or "tool"
+                record_count = msg.content.count('"id":') or msg.content.count('"name":')
+                limit_match = re.search(r'"limit":\s*(\d+)',msg.content)
+                summary_text = f"Tool {tool_name} returned {record_count} record(s)"
+                if limit_match:
+                    summary_text += f" (limited to {limit_match.group(1)})"
+                chat_history[i] = ToolMessage(content=summary_text,tool_call_id = msg.tool_call_id,name=tool_name)
+                print(f"[COMPRESS] ToolMessage {tool_name}:{len(msg.content)} chars -> '{summary_text}'")
         system_prompt = SystemMessage(content=system_prompt_text + "\n\n/no_think")
         llm_input = (
             [system_prompt]
@@ -506,7 +524,7 @@ async def chat_model_node(state: MainState):
                 break
             retry_count += 1
             remaining_tools = [
-                t for t in available_tools if t.name in remaining_names
+                t for t in available_tools if t.name in selected_tools
             ]
             if not remaining_tools:
                 break
@@ -531,7 +549,11 @@ async def chat_model_node(state: MainState):
                 name = call.get("name", "")
                 if name:
                     called_names.add(name)
-                all_raw_calls.append(call)
+                if not any(
+                    c.get("name") == name and c.get("args") == call.get("args")
+                    for c in all_raw_calls
+                ):
+                    all_raw_calls.append(call)
 
             remaining_names = [
                 n for n in selected_tools if n not in called_names
@@ -553,7 +575,7 @@ async def chat_model_node(state: MainState):
                 + llm_input[1:-1]
                 + [HumanMessage(content=user_query)]
                 + [response]
-                + [HumanMessage(content=f"You still need to call the following tool(s): {', '.join(remaining_names)}. Call them now.")]
+                + [HumanMessage(content=f"You still need to call the following tool(s): {', '.join(remaining_names)}. Call them now.Do NOT call tools you have already called.")]
             )
 
         if not all_raw_calls:

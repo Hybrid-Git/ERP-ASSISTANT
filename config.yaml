@@ -84,6 +84,31 @@ hinglish:
     - hamare
     - hamara
     - hamari
+    - tu
+    - tera
+    - tere
+    - kaisa
+    - kaise
+    - kaisi
+    - karega
+    - karegi
+    - karlega
+    - karlegi
+    - karunga
+    - karoge
+    - dega
+    - degi
+    - doge
+    - dunga
+    - kar sakte
+    - kar sakta
+    - kar sakti
+    - de sakte
+    - de sakta
+    - de sakti
+    - lia
+    - liye
+    - chai
 
   multilingual_words:
     - ka
@@ -139,6 +164,31 @@ hinglish:
     - hamare
     - hamara
     - hamari
+    - tu
+    - tera
+    - tere
+    - kaisa
+    - kaise
+    - kaisi
+    - karega
+    - karegi
+    - karlega
+    - karlegi
+    - karunga
+    - karoge
+    - dega
+    - degi
+    - doge
+    - dunga
+    - kar sakte
+    - kar sakta
+    - kar sakti
+    - de sakte
+    - de sakta
+    - de sakti
+    - lia
+    - liye
+    - chai
 
 route_keywords:
   - customer

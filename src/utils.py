@@ -5,6 +5,8 @@ from types import MappingProxyType
 import numpy as np
 from src.config import embedding_model, get_cfg
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
+import re
+
 
 NON_ENGLISH_HINTS = get_cfg("hinglish", "non_english_hints", default=[])
 MULTILINGUAL_WORDS = get_cfg("hinglish", "multilingual_words", default=[])
@@ -254,3 +256,10 @@ def extract_date_range_for_tool(query: str, date_keywords: list[str]) -> tuple[s
 
 def sanitize_tool_filters(name: str, args: dict) -> dict:
     return args
+
+
+
+def strip_think_tags(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()

@@ -168,6 +168,8 @@ async def translator_node(state: MainState) -> MainState:
     try:
         print("Translator node triggered")
         user_query = state.get("user_query", "") or ""
+        import string
+        user_query = user_query.strip().rstrip(string.punctuation + "/\\")
 
         if not user_query:
             return {
