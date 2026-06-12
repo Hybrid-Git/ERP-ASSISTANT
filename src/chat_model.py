@@ -530,7 +530,11 @@ async def chat_model_node(state: MainState):
 
             step = now()
             print(f"[6] Invoking LLM with bind_tools (round {retry_count}, tools: {[t.name for t in remaining_tools]})...")
-            response = await llm.bind_tools(remaining_tools).ainvoke(loop_input)
+            try:
+                response = await llm.bind_tools(remaining_tools).ainvoke(loop_input)
+            except Exception as e:
+                print(f"[RETRY ERROR] {e} — preserving round {retry_count - 1} results")
+                break
             print(f"[6] LLM invoke completed: {sec(step)}s")
             log_token_usage(response, "chat_model")
 
@@ -556,6 +560,16 @@ async def chat_model_node(state: MainState):
 
             remaining_names = [
                 n for n in selected_tools if n not in called_names
+            ]
+            remaining_names = [
+                n for n in remaining_names
+                if n in TOOL_INTENT_REGISTRY and (
+                    not (set(TOOL_INTENT_REGISTRY[n].get("keywords", []))
+                          | set(TOOL_INTENT_REGISTRY[n].get("aliases", [])))
+                    or any(kw in user_query.lower() for kw in
+                           set(TOOL_INTENT_REGISTRY[n].get("keywords", []))
+                           | set(TOOL_INTENT_REGISTRY[n].get("aliases", [])))
+                )
             ]
             if not remaining_names:
                 break
@@ -597,6 +611,7 @@ async def chat_model_node(state: MainState):
                 all_raw_calls.append(call)
             if fallback_calls:
                 print(f"[FALLBACK] LLM produced {len(fallback_calls)} tool call(s): {[c.get('name') for c in fallback_calls]}")
+                response = fallback_response
             else:
                 print("[FALLBACK] LLM still refused — will return empty")
                 last_tc = state.get("last_tool_call", {})
@@ -611,6 +626,7 @@ async def chat_model_node(state: MainState):
                         called_names.add(tool_name)
                         print(f"[FALLBACK] Last resort: reused last tool call: {tool_name}")
                         break
+                response = AIMessage(content="", tool_calls=list(all_raw_calls))
 
         query_parts = state.get("query_parts", [original_query])
         combined_q = (f"{original_query or ''} {state.get('canonical_query', '') or ''}").lower()
@@ -649,7 +665,7 @@ async def chat_model_node(state: MainState):
                 if tn == "get_top_customer":
                     top_kws = {"top customer", "best customer", "highest", "most revenue", "top buyer", "top client"}
                     if not any(kw in qp_lower for kw in top_kws):
-                        customer_search_kws = {"customer", "party", "detail", "information", "bangalore", "details"}
+                        customer_search_kws = {"customer", "party", "detail", "information", "bangalore", "details", "name", "names"}
                         if any(kw in qp_lower for kw in customer_search_kws):
                             print(f"[FORCE-INJECT] Skipping {tn} — query is a customer search, not a top-customer query")
                             continue
@@ -737,6 +753,36 @@ async def chat_model_node(state: MainState):
             if low_stock_kws and new_args.get("low_stock_only") is True:
                 if not any(kw in combined_q for kw in low_stock_kws):
                     new_args["low_stock_only"] = False
+            if name == "get_stock_levels":
+                q_parsed = re.sub(
+                    r'\b(?:negative|minus)\s+(\d+(?:\.\d+)?)',
+                    r'-\1', combined_q, flags=re.IGNORECASE
+                )
+                range_pat = re.compile(
+                    r'(?:'
+                    r'(?:between|range)\s+(-?\d+(?:\.\d+)?)\s+(?:and|to|–|-)\s+(-?\d+(?:\.\d+)?)'
+                    r'|'
+                    r'(-?\d+(?:\.\d+)?)\s+(?:se|to|–|-)\s+(-?\d+(?:\.\d+)?)\s*(?:ke?\s+bi(?:ch|c?h)|ke?\s+be\w*ch)?'
+                    r')',
+                    re.IGNORECASE,
+                )
+                m = range_pat.search(q_parsed)
+                if m:
+                    vals = [g for g in m.groups() if g is not None]
+                    if len(vals) >= 2:
+                        try:
+                            min_val = min(float(vals[0]), float(vals[1]))
+                            max_val = max(float(vals[0]), float(vals[1]))
+                            existing_filters = new_args.get("filters", {}) or {}
+                            existing_filters["closingQty"] = {"gte": min_val, "lte": max_val}
+                            new_args["filters"] = existing_filters
+                            term_val = new_args.get("term")
+                            if term_val and re.fullmatch(r'-?\d+(?:\.\d+)?(?:\s*[-–]\s*-?\d+(?:\.\d+)?)?', str(term_val)):
+                                print(f"[RANGE-FILTER] {name}: cleared hallucinated term='{term_val}'")
+                                del new_args["term"]
+                            print(f"[RANGE-FILTER] {name}: injected closingQty range {min_val}–{max_val}")
+                        except (ValueError, TypeError):
+                            pass
             if name == "get_customer":
                 cust_num = re.search(r"(?:customer|party|client)\s*(?:number|no|#)?\s*:?\s*(\d+)", combined_q)
                 if cust_num and not new_args.get("search"):
@@ -920,7 +966,7 @@ async def chat_model_node(state: MainState):
             print(f"[FIX] Extracted {len(tool_calls)} tool call(s) from bind_tools")
 
         print("\n========== WORKER LLM RESPONSE ==========")
-        print("response_type:", type(response).__name__)
+        print("response_type:", type(response).__name__ if 'response' in dir() else 'N/A')
         print("tool_call_count:", len(tool_calls))
         print("tool_calls:", tool_calls)
         print("========================================\n")

@@ -4,7 +4,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
-from src.utils import LIST_WORDS, TOOL_DOMAINS,strip_think_tags
+from src.utils import LIST_WORDS, TOOL_DOMAINS, strip_think_tags, log_token_usage
 from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
 
@@ -115,171 +115,66 @@ async def response_generation_node(state: MainState):
     ))
 
     system_prompt = (
-        "You are an ERP assistant. Write a SHORT natural conversational reply using ONLY the tool results below.\n"
-        "\n"
-        "PERSONALITY:\n"
-        "- Be warm and conversational — like a helpful human, not a robot.\n"
-        "- Vary your phrasing. Don't repeat the same sentence patterns.\n"
-        "- If the user used Hinglish/Hindi, mirror their language and tone.\n"
-        "- Never say 'As an AI' or 'As a language model' — just be helpful.\n"
-        "- Only end with a question (like 'Kuch aur?' or 'Anything else?') if the user's query itself ended with a question mark ('?'). Otherwise end with '.'.\n"
-        "- If the user asks about something you already covered earlier, "
-        "refer back naturally: 'Jaisa aapne pehle pucha tha...'\n"
-        "\n"
-        "PRIORITY RULE: When multiple tools returned results, focus on the tool(s) most relevant to the user's actual question. "
-        "Ignore tool outputs that don't relate to what the user asked about. "
-        "For example, if the user asked about 'Bangalore customers' and `get_stock_levels` also returned data, just answer about the customer.\n"
-        "\n"
-        "HARD RULES:\n"
-        "0. CRITICAL — NEVER output raw JSON, JSON blocks (```json … ```), or any data dump. "
-        "Your ENTIRE reply MUST be a plain conversational paragraph in the user's language. "
-        "NO exceptions. If you are tempted to include JSON, stop and write natural sentences instead.\n"
+        "You are an ERP assistant. Reply short, natural, in the user's language. Use ONLY TOOL RESULTS below.\n"
+        "Personality: warm, conversational. Mirror user's language. Never say 'As an AI'. "
+        "End with '.' unless user used '?'.\n"
+        "If multiple tools returned data, answer only from the tool(s) relevant to the user's question.\n"
+        "NEVER output JSON/code. NEVER invent fields or values.\n"
+        "NO headings ('Summary:', 'Details:', etc.), NO meta-framing ('Based on...', 'Here are...'), "
+        "NO bullet points unless user asked for a list. "
+        "If tool results are empty, say 'data nahi mila' / 'kuch nahi mila'. "
+        "Answer only what was asked, 1-3 sentences.\n"
     )
     if previous_summary:
-        system_prompt += f"\nFor background, the conversation history is:\n{previous_summary}\n\n"
+        system_prompt += f"Background conversation:\n{previous_summary}\n\n"
     if conversation_context:
         entities = conversation_context.get("entities", [])
         if entities:
             system_prompt += f"KNOWN ENTITIES:\n{json.dumps(entities[-3:], indent=2, ensure_ascii=False)}\n\n"
+
+    lang_rule = (
+        "LANGUAGE: Reply in {mode}. "
+        "Use ONLY a-z A-Z 0-9 and basic punctuation. "
+        "No Devanagari or non-Latin scripts. "
+        "Write Hindi words with English letters (e.g. 'aap', 'hai', 'nahi', 'se', 'ka'). "
+        "Mirror the user's words.\n"
+        "WRONG: आपके ग्राहक रोहन हैं\nCORRECT: aapke customer Rohan hai\n"
+    )
     if detected_language == "hinglish":
-        system_prompt += (
-            "1. LANGUAGE: The user wrote in Hinglish (Hindi words written with English letters).\n"
-            "   Your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation (. , ? !).\n"
-            "   Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters.\n"
-            "   Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka', 'kaunsa'.\n"
-            "   Use the exact same words the user used when possible.\n"
-            "\n"
-            "EXAMPLE:\n"
-            "  User: muje customer details chaie\n"
-            "  Tool result: Customer name: Rohan\n"
-            "  Correct reply: aapke customer Rohan hai\n"
-            "  WRONG: आपके ग्राहक रोहन हैं (NO Devanagari at all)\n"
-        )
+        system_prompt += lang_rule.replace("{mode}", "Hinglish (Hindi words in English letters)")
     elif detected_language == "hindi":
-        system_prompt += (
-            "1. LANGUAGE: The user wrote in Hindi. Reply in Hinglish (Hindi words with English letters).\n"
-            "   Your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation (. , ? !).\n"
-            "   Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters.\n"
-            "   Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-            "   Use the exact same words the user used when possible.\n"
-            "\n"
-            "EXAMPLE:\n"
-            "  User: muje customer details chaie\n"
-            "  Tool result: Customer name: Rohan\n"
-            "  Correct reply: aapke customer Rohan hai\n"
-            "  WRONG: आपके ग्राहक रोहन हैं (NO Devanagari at all)\n"
-        )
+        system_prompt += lang_rule.replace("{mode}", "Hinglish")
     else:
-        system_prompt += (
-            "1. LANGUAGE: The user wrote in English. Reply in English.\n"
-        )
+        system_prompt += "LANGUAGE: Reply in English.\n"
+
     system_prompt += (
-        "2. Tool results are definitive answers. NEVER end your reply with '?' — use '.' even when stating a fact.\n"
-        "   WRONG: aapke customer Rohan hai?\n"
-        "   CORRECT: aapke customer Rohan hai.\n"
-        "3. NEVER invent field names, values, IDs, or numbers. If a value is missing, say so plainly.\n"
-        "   The TOOL RESULTS JSON below is the ONLY source of truth. Do NOT add IDs, names, or values not present in it.\n"
-        "   WRONG: \"productId F12 ka quantity 5 se jada hai\" (when tool results have no productId or F12)\n"
-        "   CORRECT: \"is baare mein data nahi mila\" or \"closingQty wala column nahi tha\"\n"
-        "4. NO headings of any kind. NO 'Summary:', 'Details:', 'Sample Record:', "
-        "'Additional Information:', 'Key Points:', 'Sample Invoice Details:', 'Outstanding X Summary:' — "
-        "zero headings. Just plain conversational sentences.\n"
-        "   WRONG: 'Sales Invoices Summary: AI/0324/0010 ka netAmount 29315.7 hai'\n"
-        "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai'\n"
-        "5. Do NOT use bullet points or numbered lists unless the user explicitly asked for a list.\n"
-        "6. Answer ONLY what was asked. No analysis, advice, recommendations, "
-        "'Next Steps:', 'Additional Insights:', or 'Key Points'. "
-        "If the user asked for netAmount, give netAmount and nothing else. "
-        "1-3 sentences max.\n"
-        "   WRONG: 'Additional Insights: The invoices are from Oct-Dec 2024. Next Steps: Review high amounts.'\n"
-        "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai, ledger CGLAM LIFESTYLE hai.'\n"
-        "7. Never begin your response with 'Based on the provided', 'Based on the data', "
-        "'Here are the key points', 'Additional Insights', 'Summary Breakdown', "
-        "'Suggestions', 'Example Queries', 'Here is the summary', or any similar meta-framing. "
-        "Start directly with the answer to the user's query. "
-        "The 'For context' note below is for your reference only — do not repeat it or comment on it.\n"
-        "   WRONG: 'Based on the provided summary, here are some key points and suggestions:'\n"
-        "   CORRECT: 'aapke sales invoice mai ledger names hain: B2C_ANDHRA PRADESH, Hirva Beauty...'\n"
-        "8. If TOOL RESULTS are empty [] for the relevant tool, that means no data was found. "
-        "Say so plainly: 'data nahi mila' or 'kuch nahi mila' in the user's language. "
-        "Do NOT repeat back any entity name, company name, ID, or invoice number that the user mentioned — "
-        "the tool found nothing, so there is nothing to confirm. Do NOT say records are hidden.\n"
-        "9. If the tool results contain MULTIPLE records that match the user's query (e.g. same invoiceNo from different parties/dates), "
-        "report ALL of them. Never omit any. List each with its distinguishing fields so the user can tell them apart.\n"
-        "   WRONG: 'PR-269 ka net amount 3292.7 hai' (only one of two records)\n"
-        "   CORRECT: 'PR-269 ke 2 records hain: Bigfoot se 3292.7 aur Amazon se 1215.95.'\n"
-        "10. If the user's query has MULTIPLE distinct parts (e.g. 'TDS aur B2B', 'sales aur purchase'), "
-        "your FIRST response MUST call a SEPARATE tool for EACH part — never skip a part. "
-        "You have the full tool list; use every tool that matches a query part.\n"
-        "11. When one tool found the exact record the user asked for (e.g. specific invoiceNo), "
-        "answer ONLY from that tool's data. Ignore all other tool outputs completely. "
-        "Do NOT describe, summarize, or mention any other tool's results.\n"
-        "   WRONG: 'Purchase invoices have 684 records but Sales has AI/0324/0010 with netAmount 29315.7'\n"
-        "   CORRECT: 'AI/0324/0010 ka netAmount 29315.7 hai' (purchase data not mentioned at all)\n"
-        "    When the user asks for 'detail', 'sara detail', 'all details', or 'full info', "
-        "include EVERY field value from the tool results in your reply (voucherCount, taxableAmount, "
-        "igst, cgst, sgst, cess, tax, invoiceAmount, etc.). Do NOT cherry-pick only 1-2 fields.\n"
-        "12. If the user asks for the ID of a category/item (e.g. 'X ka id', 'find id of X'), "
-        "use the search-ledger tool. Set `groupType` based on the noun: "
-        "expense for office expenses/salary/rent, party for customers/vendors, "
-        "asset for fixed assets. Infer the noun from the query.\n"
-        "13. B2B / B2C (Small/Large) / Exports / Nil-Rated / Exempt are GST categories, "
-        "NOT sales categories. When the user asks for B2B, B2C, or any GST-category data, "
-        "count, or split, ALWAYS use `get_gst_summary`. It returns ALL categories together — "
-        "find the relevant one (b2b, b2cSmall, b2cLarge, exports, nilRated) in the result data. "
-        "Do NOT use `get_sales_summary` for B2B or B2C data — it returns overall sales totals, "
-        "not the GST category breakdown.\n"
-         "14. LIST TRUNCATION — CONVERSATIONAL: When truncation_info shows more records exist "
-         "than shown, just mention the total count naturally and ask if they want to see some. "
-         "Do NOT list any individual records when total > 10 — "
-         "just say how many were found and offer. "
-         "When total <= 10, show 2-3 records as a short sample then offer the rest. "
-         "Vary your phrasing each time — never repeat the same sentence pattern. "
-         "Do NOT say 'Add a filter' — the user didn't ask for that.\n"
-         "    EXAMPLES:\n"
-         "      'B2C_PUNJAB ke 293 outstanding ITEM invoices hain. Kuch dikhaun?'\n"
-         "      'That's the first 5 of 120. Want to see the rest?'\n"
-         "      'Aapke 27 records hain. Dikhaun?'\n"
-         "    WRONG: 'Showing first 10 of 854. Add a filter.' (too robotic)\n"
-        "15. FIELD DISPLAY RULES:\n"
-        "    - For list queries (default): show max 5 most important fields per record. "
-        "Pick the 5 fields most relevant to the user's question (e.g. id, name, "
-        "invoiceNo, netAmount, outstanding).\n"
-        "    - For records with 5 or fewer fields: show all fields.\n"
-        "    - When the user asks for 'all details' / 'sabhi detail' / 'full info' / "
-        "'sara detail' (already covered by rule 11): show EVERY field — this overrides "
-        "the 5-field limit completely.\n"
-        "16. NEVER output Python code, SQL, or any code. "
-         "NEVER invent field names or values not present in TOOL RESULTS. "
-         "NEVER write 'Key Observations', 'Next Steps', 'Data Validation', "
-         "'Potential Use Cases', 'Sample Records', or any section headings — "
-         "just answer conversationally and stop.\n"
-          "17. CRITICAL — You can ONLY see the records shown in TOOL RESULTS. "
-          "If more records exist (truncation_info mentions them), you may say so "
-          "and offer to show them, but you MUST NOT describe, summarize, or invent "
-          "ANY data for records beyond what you can actually see. "
-          "No totals, no aggregates, no 'sabse zyada' or 'sabse kam' — "
-          "only what is directly visible in TOOL RESULTS. "
-          "If asked to 'show more', say you need to fetch them first.\n"
-          "18. CONVERSATIONAL ENDING — Always end your reply with a natural follow-up "
-          "invitation like 'Anything else?' or 'Kuch aur?' or 'Aur kya dekhna hai?' "
-          "unless the user's query was a direct command, a simple yes/no answer, "
-          "or a request that clearly does not invite follow-up (like 'thank you', 'ok', 'bye'). "
-          "Do NOT force it when it feels unnatural.\n"
-           "/no_think\n"
+        "End with '.' not '?' (facts are not questions). "
+        "Never invent fields/values — TOOL RESULTS are the ONLY truth. "
+        "WRONG: 'productId F12 ka qty 5 se jada hai'\nCORRECT: 'is baare mein data nahi mila'\n"
+        "No headings, no meta-framing ('Based on...', 'Here are...', 'In summary...'). "
+        "WRONG: 'Sales Invoices Summary: AI/0324/0010 ka netAmount 29315.7'\nCORRECT: 'AI/0324/0010 ka netAmount 29315.7'\n"
+        "If data is empty, say 'data/kuch nahi mila'. "
+        "Report ALL matching records, never omit duplicates. "
+        "WRONG: 'PR-269 ka net 3292.7'\nCORRECT: 'PR-269 ke 2 records: Bigfoot 3292.7, Amazon 1215.95'\n"
+        "For multi-part queries, answer each part. "
+        "When one tool has the exact record, ignore other tool outputs. "
+        "WRONG: 'Purchase has 684 records but Sales has AI/0324/0010'\nCORRECT: 'AI/0324/0010 ka netAmount 29315.7'\n"
+        "For detail requests: include EVERY field from the record. "
+        "For truncation: just say total count and ask if they want more. No 'Add a filter'. "
+        "WRONG: 'Showing first 10 of 854. Add a filter.'\nCORRECT: 'Aapke 27 records hain. Dikhaun?'\n"
+        "Show max 5 fields per record for list queries, all fields for detail queries. "
+        "Only show data from TOOL RESULTS — no summaries/aggregates of hidden records. "
+        "End with a natural follow-up unless query was a yes/no/command.\n"
     )
     if list_mode:
         system_prompt += (
-            "19. LIST MODE — The user asked for a list or multiple records. "
-            "Format each record as a bullet point ('- '). "
-            "Show max 1-2 most relevant fields per record (e.g. just name, or name + outstanding). "
-            "After the bullets, naturally mention the total count and ask if they want to see more.\n"
-            "    Example:\n"
-            "      - Masjid To Churchgate\n"
-            "      - Vasai-Dahisar\n"
-            "      - Ranjeet\n\n"
-            "      Ye 100 records mein se 10 hain. Aur dikhaun?\n"
-            "    If 0 records found, just say 'kuch nahi mila' — no bullets.\n"
+            "LIST MODE: Format each record as '- ' bullet. "
+            "STRICT: headings or numbered lists instead of '- ' bullets → response DISCARDED. "
+            "Show 1-2 fields per record. Mention total count, ask if they want more.\n"
+            "Example:\n"
+            "  - Masjid To Churchgate\n"
+            "  - Vasai-Dahisar\n\n"
+            "  Ye 100 records mein se 10 hain. Aur dikhaun?\n"
         )
 
     final_response_prompt = dict(final_response)
@@ -324,7 +219,19 @@ async def response_generation_node(state: MainState):
     final_response_prompt.pop("_invoice_match", None)
     data = final_response_prompt.get("data", {})
 
-    MAX_SAMPLE = 20 if detail_mode else (10 if list_mode else 5)
+    canonical = state.get("canonical_query", "") or ""
+    has_range_filter = bool(re.search(
+        r'(?:between|range)\s+(-?\d+(?:\.\d+)?)\s+(?:and|to|–|-)\s+(-?\d+(?:\.\d+)?)',
+        original_query, re.IGNORECASE
+    )) or bool(re.search(
+        r'\b(\d+(?:\.\d+)?)\s+se\s+(\d+(?:\.\d+)?)\s+ke?\s+bich',
+        original_query, re.IGNORECASE
+    )) or bool(re.search(
+        r'(?:between|range)\s+(-?\d+(?:\.\d+)?)\s+(?:and|to|–|-)\s+(-?\d+(?:\.\d+)?)',
+        canonical, re.IGNORECASE
+    ))
+
+    MAX_SAMPLE = 5 if has_range_filter else (20 if detail_mode else (10 if list_mode else 5))
     for tool_name, records in data.items():
         if isinstance(records, list) and len(records) > MAX_SAMPLE:
             data[tool_name] = records[:MAX_SAMPLE]
@@ -335,6 +242,9 @@ async def response_generation_node(state: MainState):
             tool_records = data.get(tool_name, [])
             if isinstance(tool_records, list):
                 truncation_info[tool_name]["shown"] = len(tool_records)
+    if has_range_filter:
+        final_response_prompt.pop("total_rows", None)
+        truncation_info = {}
     truncation_note = ""
     if truncation_info:
         total = sum(v.get("total", 0) for v in truncation_info.values())
@@ -364,6 +274,47 @@ async def response_generation_node(state: MainState):
             renamed[domain_key] = records
         final_response_prompt["data"] = renamed
 
+    if not detail_mode and isinstance(final_response_prompt.get("data"), dict):
+        TOOL_FIELD_PRIORITY = {
+            "customers": ["name"],
+            "stock_levels": ["name", "closingQty"],
+            "sales_invoices": ["invoiceNo", "netAmount", "outstanding"],
+            "purchase_invoices": ["invoiceNo", "netAmount", "outstanding"],
+            "gst_summary": ["category", "totalTaxableValue", "totalTax"],
+            "sales_summary": ["category", "total"],
+            "purchase_summary": ["category", "total"],
+            "sales_trend": ["period", "total"],
+            "trial_balance": ["ledgerName", "closingBalance"],
+            "top_customers": ["name", "totalRevenue"],
+            "items": ["name", "closingQty"],
+            "ledger_matches": ["name", "ledgerType"],
+            "customer_ledger": ["ledgerName", "debit", "credit"],
+            "slow_moving_products": ["name", "closingQty"],
+            "search_vendors": ["name"],
+            "tds_outstanding": ["category", "amount"],
+            "tcs_outstanding": ["category", "amount"],
+            "overdue_invoices": ["invoiceNo", "netAmount", "outstanding"],
+        }
+        pruned_data = {}
+        for key, records in final_response_prompt["data"].items():
+            if not isinstance(records, list):
+                pruned_data[key] = records
+                continue
+            keep = TOOL_FIELD_PRIORITY.get(key, ["name"])
+            pruned_records = []
+            for rec in records:
+                if not isinstance(rec, dict):
+                    pruned_records.append(rec)
+                    continue
+                new_rec = {k: rec[k] for k in keep if k in rec and rec[k] not in (None, "", [])}
+                if not new_rec:
+                    first_key = next(iter(rec), None)
+                    if first_key is not None:
+                        new_rec[first_key] = rec[first_key]
+                pruned_records.append(new_rec)
+            pruned_data[key] = pruned_records
+        final_response_prompt["data"] = pruned_data
+
     detail_note = "\nDETAIL MODE: Show EVERY field of each record.\n" if detail_mode else ""
 
     human_prompt = (
@@ -385,6 +336,9 @@ async def response_generation_node(state: MainState):
             if hasattr(chunk, "content") and chunk.content:
                 full_content += chunk.content
         response_text = strip_think_tags(full_content.strip())
+        input_chars = len(human_prompt) + len(system_prompt)
+        output_chars = len(full_content)
+        print(f"[TOKENS] response_gen | input_est={input_chars // 4} | output_est={output_chars // 4} | total_est={(input_chars + output_chars) // 4}")
         if not response_text:
             raise ValueError("Empty response from LLM")
         response_text = _clean_llm_response(response_text)
@@ -395,6 +349,30 @@ async def response_generation_node(state: MainState):
         )
         if not response_text.strip():
             raise ValueError("Response had only meta-framing/JSON after cleaning")
+        if list_mode and response_text.strip():
+            lines = response_text.strip().split('\n')
+            has_bullets = any(line.strip().startswith('- ') for line in lines)
+            if not has_bullets:
+                print(f"[LIST-MODE-FALLBACK] LLM didn't use bullets for list query. Replacing with deterministic bullet list.")
+                fallback_parts = []
+                for recs in final_response_prompt.get("data", {}).values():
+                    if isinstance(recs, list):
+                        for rec in recs[:10]:
+                            if isinstance(rec, dict):
+                                keys = list(rec.keys())[:2]
+                                parts = [f"{k}: {rec[k]}" for k in keys if k in rec]
+                                fallback_parts.append("- " + " | ".join(parts))
+                total_count = 0
+                for v in truncation_info.values() if isinstance(truncation_info, dict) else []:
+                    total_count += v.get("total", 0) if isinstance(v, dict) else 0
+                if fallback_parts:
+                    response_text = "\n".join(fallback_parts)
+                    if total_count > len(fallback_parts):
+                        response_text += f"\n\nYe {total_count} records mein se {len(fallback_parts)} hain. Aur dikhaun?"
+                    else:
+                        response_text += f"\n\nYe {len(fallback_parts)} records hain."
+                else:
+                    response_text = "kuch nahi mila"
         data = final_response.get("data", {})
         has_any_data = any(
             isinstance(recs, list) and len(recs) > 0

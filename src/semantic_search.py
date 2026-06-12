@@ -153,6 +153,21 @@ def _filter_for_list_intent(part: str, tools: list[str]) -> list[str]:
     return filtered
 
 
+def _keyword_whitelist_filter(part: str, tools: list[str]) -> list[str]:
+    q_lower = part.lower()
+    filtered = []
+    for t in tools:
+        meta = TOOL_INTENT_REGISTRY.get(t, {})
+        kws = set(meta.get("keywords", []))
+        aliases = set(meta.get("aliases", []))
+        overlap = (kws | aliases) & {q_lower} | {kw for kw in (kws | aliases) if kw in q_lower}
+        if overlap:
+            filtered.append(t)
+    if filtered:
+        return filtered
+    return tools
+
+
 def _matches_ood_topic(query: str) -> bool:
     q = query.lower().strip()
     if not q:
@@ -312,6 +327,7 @@ async def semantic_search(state: MainState) -> MainState:
             tools_for_part = score_tools_via_reranker(part, filtered_registry)
             if tools_for_part:
                 tools_for_part = _filter_for_list_intent(part, tools_for_part)
+                tools_for_part = _keyword_whitelist_filter(part, tools_for_part)
                 print(f"Reranker tools for part '{part}': {tools_for_part}")
                 if tools_for_part:
                     selected_tool_groups.append(tools_for_part)
@@ -320,6 +336,7 @@ async def semantic_search(state: MainState) -> MainState:
             kw_tools = _keyword_fallback(part, filtered_registry)
             if kw_tools:
                 kw_tools = _filter_for_list_intent(part, kw_tools)
+                kw_tools = _keyword_whitelist_filter(part, kw_tools)
                 print(f"Keyword fallback tools for part '{part}': {kw_tools}")
                 if kw_tools:
                     selected_tool_groups.append(kw_tools)
