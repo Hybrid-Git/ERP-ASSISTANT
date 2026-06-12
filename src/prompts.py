@@ -60,7 +60,7 @@ GREETING_PATTERNS = [
 ]
 
 CAPABILITY_PATTERNS = [
-    r"what (can|do) (you|u) do",
+    r"what (can|do|will|would) (you|u) do",
     r"what('s| is) your purpose",
     r"what ('s|is) (this |the )?(chatbot|assistant|bot|tool) (for|about)",
     r"(tell|show) me (about|what) (you|u) (can |)do",
