@@ -1,0 +1,150 @@
+VLLM TOOL-CALLING FIX PLAN
+===========================
+Date: 2026-06-13
+Model: Qwen3-14B-AWQ
+Issue: bind_tools() crashes HTTP 500 with --tool-call-parser qwen
+
+
+PROBLEM
+-------
+LangChain's convert_to_openai_tool() generates JSON Schema with patterns like:
+  "anyOf": [{}, {"type": "null"}]
+
+The --tool-call-parser qwen strictly validates input schemas and crashes (HTTP 500)
+on these patterns because empty schema {} is invalid JSON Schema.
+
+The model itself works fine -- PROBE tests show llm.ainvoke() (without tool binding)
+returns correct tool JSON: {"tool": "get_search_vendors", "parameters": {...}}
+
+
+SOLUTION
+--------
+Switch to --tool-call-parser hermes (lenient, reads model text output for JSON patterns),
+disable thinking mode, and force tool_choice="required".
+
+
+STEP 1: vLLM SERVER RESTART
+----------------------------
+Current command:
+  python -m vllm.entrypoints.openai.api_server \
+      --model Qwen/Qwen3-14B-AWQ \
+      --enable-auto-tool-choice \
+      --tool-call-parser qwen \
+      --max-model-len 16384 \
+      --gpu-memory-utilization 0.9 \
+      --host 0.0.0.0 \
+      --port 8000
+
+New command:
+  python -m vllm.entrypoints.openai.api_server \
+      --model Qwen/Qwen3-14B-AWQ \
+      --enable-auto-tool-choice \
+      --tool-call-parser hermes \
+      --reasoning-parser deepseek_r1 \
+      --max-model-len 16384 \
+      --gpu-memory-utilization 0.9 \
+      --host 0.0.0.0 \
+      --port 8000
+
+Changes:
+  - tool-call-parser: qwen -> hermes
+    Qwen3 tokenizer ships with Hermes-style tool support built in.
+    The hermes parser reads the model's text output for JSON patterns
+    ({"name": "...", "arguments": {...}}) instead of strictly validating
+    input schema. This avoids the HTTP 500 crash.
+
+  + --reasoning-parser deepseek_r1
+    Strips thinking/reasoning tags from Qwen3's output so tool calls
+    aren't buried inside <think> blocks. Optional -- drop if problematic.
+
+
+STEP 2: src/config.py (~line 30)
+--------------------------------
+Add disable_streaming="tool_calling" + enable_thinking: False to the llm instance.
+
+Current:
+  llm = ChatOpenAI(
+      model=os.getenv("LLM_MODEL"),
+      base_url=os.getenv("LLM_BASE_URL"),
+      api_key=os.getenv("LLM_MODEL_API_KEY"),
+      temperature=0.0,
+      max_tokens=4096,
+      timeout=120,
+      extra_body={"keep_alive": "5m"},
+  )
+
+New:
+  llm = ChatOpenAI(
+      model=os.getenv("LLM_MODEL"),
+      base_url=os.getenv("LLM_BASE_URL"),
+      api_key=os.getenv("LLM_MODEL_API_KEY"),
+      temperature=0.0,
+      max_tokens=4096,
+      timeout=120,
+      disable_streaming="tool_calling",                # NEW
+      extra_body={
+          "keep_alive": "5m",
+          "chat_template_kwargs": {"enable_thinking": False},  # NEW
+      },
+  )
+
+Why disable_streaming="tool_calling":
+  The graph runs inside astream_events() which attaches streaming callback
+  handlers to all LLM calls. This forces even ainvoke() through the streaming
+  code path (_agenerate_with_cache -> _astream). vLLM's streaming response for
+  tool-calling returns zero accumulated chunks -> "No generations found in
+  stream" error. Setting disable_streaming="tool_calling" tells LangChain:
+  "When tools are in the request, skip streaming and use _agenerate() directly."
+
+Why enable_thinking: False:
+  Qwen3 has a built-in thinking/chain-of-thought mode that wraps responses
+  inside <think>...</think> tags. Even though hermes parser can extract tool
+  JSON through thinking tags, disabling it is cleaner and faster.
+
+
+STEP 3: src/chat_model.py (line 544)
+------------------------------------
+Add tool_choice="required" to the bind_tools call.
+
+Current:
+  response = await llm.bind_tools(remaining_tools, strict=False).ainvoke(loop_input)
+
+New:
+  response = await llm.bind_tools(remaining_tools, strict=False, tool_choice="required").ainvoke(loop_input)
+
+Why tool_choice="required":
+  The router (semantic_search) already decides which tools are relevant.
+  tool_choice="required" forces the LLM to call one of the provided tools
+  instead of responding with text ("I don't know", "Here's what I found...").
+  The model fills the args, we execute the API. More reliable for ERP.
+  vLLM docs say "required" and named function calling use structured outputs
+  and produce more schema-compliant results than "auto".
+
+Same change on the FALLBACK path (line 638):
+Current:
+  fallback_response = await llm.bind_tools(remaining_tools, strict=False).ainvoke([...])
+New:
+  fallback_response = await llm.bind_tools(remaining_tools, strict=False, tool_choice="required").ainvoke([...])
+
+
+ORDER TO APPLY
+--------------
+1. Update vLLM startup flags, restart server
+2. Edit src/config.py (2 new params)
+3. Edit src/chat_model.py (tool_choice="required" in 2 places)
+4. Restart fast_main.py
+5. Test: "muje customer name ka list chaia"
+
+
+FALLBACK IF THIS DOESN'T WORK
+------------------------------
+If HTTP 500 persists even with hermes parser, switch to schema sanitization:
+Write a function in chat_model.py that strips problematic patterns from the tool
+schemas before sending them to vLLM:
+  - "anyOf": [{}, {"type": "null"}]  -> remove the field from required
+  - "additionalProperties": true     -> delete this key
+Then keep using bind_tools(..., strict=False, tool_choice="required").
+
+If hermes parser works but tool_calls are empty (tool JSON shows in content instead),
+add post-processing in chat_model.py to parse JSON from response.content and
+convert to tool_calls format.

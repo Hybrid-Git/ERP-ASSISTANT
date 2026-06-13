@@ -1033,10 +1033,8 @@ async def get_search_vendors(
 
 @tool
 async def get_customer(
-    search: Optional[str] = "",
+    search: str = "",
     limit: int = 100,
-    fields: Optional[Any] = None,
-    filters: Optional[dict[str, Any]] = None,
 ):
     """
     Search and retrieve customers/parties/ledgers from Chapter-1 API.
@@ -1049,8 +1047,6 @@ async def get_customer(
         search: Customer name or party name (substring match). Use empty string "" to return ALL customers.
             Do NOT pass concepts like "outside india" or city names as search; those are not customer names.
         limit: Number of records to fetch. Default is 100.
-        fields: Optional output columns.
-        filters: Optional exact filters.
     """
 
     # ── Sanitize search parameter ──
@@ -1072,11 +1068,8 @@ async def get_customer(
         "limit": limit,
     }
 
-    if filters:
-        body["filters"] = filters
-
     result = await cached_api_post(CUSTOMER_ENDPOINT, body=body)
-    result = project_result(result, fields=fields, filters=filters)
+    result = project_result(result, fields=None, filters=None)
 
     print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
@@ -1089,8 +1082,6 @@ async def get_customer_ledger(
     to_date: str = "",
     page: int = 1,
     limit: int = 50,
-    fields: Optional[Any] = None,
-    filters: Optional[dict[str, Any]] = None,
 ):
     """
     Get ledger/account statement details for a specific customer.
@@ -1109,8 +1100,6 @@ async def get_customer_ledger(
         to_date: End date in YYYY-MM-DD. Empty string if not provided.
         page: Page number. Default is 1.
         limit: Number of ledger rows. Default is 50.
-        fields: Optional output columns.
-        filters: Optional exact filters.
     """
 
     body = {
@@ -1121,9 +1110,6 @@ async def get_customer_ledger(
         "page": page,
         "limit": limit,
     }
-
-    if filters:
-        body["filters"] = filters
 
     result = await cached_api_post(CUSTOMER_LEDGER_ENDPOINT, body=body)
 
@@ -1141,7 +1127,7 @@ async def get_customer_ledger(
     ledger_record.setdefault("period", raw.get("period"))
 
     records = [ledger_record]
-    records = project_fields(records, fields)
+    records = project_fields(records, None)
 
     final_result = {
         "success": True,
@@ -1160,16 +1146,15 @@ async def get_customer_ledger(
 
 @tool
 async def get_stock_levels(
-    from_date: Optional[str] = "",
-    to_date: Optional[str] = "",
+    from_date: str = "",
+    to_date: str = "",
     low_stock_only: bool = False,
     page: int = 1,
     limit: int = 10,
-    term: Optional[str] = "",
+    term: str = "",
     sort_field: str = "name",
     sort_order: str = "asc",
-    fields: Optional[Any] = None,
-    filters: Optional[dict[str, Any]] = None,
+    filters: Optional[dict] = None,
 ):
     """
     Get stock/inventory levels from Chapter-1 API.
@@ -1187,8 +1172,6 @@ async def get_stock_levels(
         term: Product name, HSN code, SKU, or search keyword.
         sort_field: Sort field. Default is "name".
         sort_order: "asc" or "desc". Default is "asc".
-        fields: Optional output columns.
-        filters: Optional exact filters.
     """
 
     needs_local_sort = bool(sort_field) and sort_field != "name"
@@ -1209,25 +1192,9 @@ async def get_stock_levels(
         "term": term or "",
     }
 
-    if filters:
-        body["filters"] = filters
-
     result = await cached_api_post(STOCK_LEVELS_ENDPOINT, body=body)
 
-    raw_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
-    print(f"[STOCK DEBUG] After cached_api_post: raw_data_len={raw_len}, fields={fields}")
-
-    if low_stock_only and fields is not None:
-        if isinstance(fields, str):
-            if low_stock_only and "isLowStock" not in fields:
-                fields = fields + ",isLowStock"
-        elif isinstance(fields, list) and "isLowStock" not in fields:
-            fields = fields + ["isLowStock"]
-        elif isinstance(fields, dict):
-            fields = {**fields, "isLowStock": True}
-    result = project_result(result, fields=fields, filters=filters)
-    projected_len = len(result.get("data", []) or []) if isinstance(result.get("data"), list) else 0
-    print(f"[STOCK DEBUG] After project_result: data_len={projected_len}, count={result.get('count')}")
+    result = project_result(result, fields=None, filters=filters)
 
     # Preserve total_rows from raw response so count/aggregate queries still work
     raw = result.get("raw_response", {})
@@ -1510,6 +1477,7 @@ tools = [
     get_search_vendors,
     get_outstanding_sales_invoices,
     get_outstanding_purchase_invoices,
+    get_overdue_invoices
 ]
 
 tools_dict = {tool.name: tool for tool in tools}

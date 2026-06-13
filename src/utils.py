@@ -22,7 +22,7 @@ LIST_WORDS = get_cfg("list_words", default=[])
 DOMAIN_KEYWORDS = MappingProxyType({
     "sales": ["sales", "sale", "sell", "sold", "overdue", "receivable", "debtor", "billing"],
     "purchase": ["purchase", "kharidi", "buy", "bought", "payable", "creditor", "bills payable"],
-    "customer": ["customer", "client", "party", "ledger", "customer name", "customer list", "customer code", "name and id", "name aur id"],
+    "customer": ["customer", "client", "party", "ledger", "customer name", "customer list", "customer code"],
     "vendor": ["vendor", "supplier", "vendor list"],
     "gst": ["gst", "gst summary", "gst detail", "gstr", "taxable", "igst", "cgst", "sgst", "b2b", "b2c"],
     "tax": ["tds", "tcs", "tax deducted", "tax collected", "tax outstanding"],

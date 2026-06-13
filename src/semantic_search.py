@@ -298,8 +298,12 @@ async def semantic_search(state: MainState) -> MainState:
             return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
 
         if query_type == "ood":
-            print(f"Translator flagged as out-of-domain — no tool needed: {user_query}")
-            return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "ood"}
+            if not _has_domain_content(query_parts) and not is_capability and not is_greeting:
+                print(f"Translator flagged as out-of-domain — no tool needed: {user_query}")
+                return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True, "query_type": "ood"}
+            else:
+                print(f"Translator flagged as OOD but domain/capability/greeting detected — routing normally: {user_query}")
+                query_type = "general"
 
         # Domain-content check — skip tool selection for vague queries
         # that consist only of generic action words (list, show, batao, etc.)
@@ -314,15 +318,13 @@ async def semantic_search(state: MainState) -> MainState:
 
         for part in query_parts:
             hard_domains, soft_domains = classify_domains(part, resolved_entities)
-            if hard_domains:
-                filtered_registry = _filter_registry_by_domain(hard_domains)
-                print(f"Part '{part}': hard domains {hard_domains}, using filtered registry ({len(filtered_registry)} tools)")
+            filter_domains = hard_domains | soft_domains
+            if filter_domains:
+                filtered_registry = _filter_registry_by_domain(filter_domains)
+                print(f"Part '{part}': domains {filter_domains} (hard={hard_domains}, soft={soft_domains}), using filtered registry ({len(filtered_registry)} tools)")
             else:
                 filtered_registry = TOOL_INTENT_REGISTRY
-                if soft_domains:
-                    print(f"Part '{part}': no hard domains, soft domains {soft_domains}, using full registry")
-                else:
-                    print(f"Part '{part}': no domains matched, using full registry")
+                print(f"Part '{part}': no domains matched, using full registry")
 
             tools_for_part = score_tools_via_reranker(part, filtered_registry)
             if tools_for_part:
@@ -344,9 +346,22 @@ async def semantic_search(state: MainState) -> MainState:
                 print(f"No tools found for part '{part}' via reranker or keyword fallback")
 
         combined_hard_domains: set[str] = set()
+        combined_soft_domains: set[str] = set()
         for qp in query_parts:
-            hd, _ = classify_domains(qp, resolved_entities)
+            hd, sd = classify_domains(qp, resolved_entities)
             combined_hard_domains |= hd
+            combined_soft_domains |= sd
+
+        DOC_TYPE_DOMAIN = {
+            "product": "stock", "inventory": "stock", "stock": "stock",
+            "customer": "customer", "party": "customer",
+            "customer_ledger": "customer", "ledger": "customer",
+            "purchase_invoice": "purchase", "purchase": "purchase",
+            "sales_invoice": "sales", "sales": "sales",
+            "gst": "gst", "gst_report": "gst", "gst_summary": "gst",
+        }
+        if document_type in DOC_TYPE_DOMAIN:
+            combined_hard_domains.add(DOC_TYPE_DOMAIN[document_type])
 
         maybe_append = []
         if document_type in {"product", "inventory", "stock"}:
@@ -368,8 +383,9 @@ async def semantic_search(state: MainState) -> MainState:
                 maybe_append = ["get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"]
 
         if maybe_append:
-            if combined_hard_domains:
-                filtered = [t for t in maybe_append if set(TOOL_DOMAINS.get(t, [])) & combined_hard_domains]
+            combined_filter_domains = combined_hard_domains | combined_soft_domains
+            if combined_filter_domains:
+                filtered = [t for t in maybe_append if set(TOOL_DOMAINS.get(t, [])) & combined_filter_domains]
                 if filtered:
                     maybe_append = filtered
                 else:

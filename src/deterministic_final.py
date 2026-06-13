@@ -391,6 +391,9 @@ async def deterministic_final_node(state: MainState):
                     entry = {"name": name}
                     if id_ is not None:
                         entry["id"] = id_
+                    source_domains = TOOL_DOMAINS.get(tool_name, [])
+                    if source_domains:
+                        entry["domain"] = source_domains[0]
                     entities.append(entry)
     ctx["entities"] = entities
 
@@ -452,6 +455,20 @@ async def deterministic_final_node(state: MainState):
             if total > MAX_RECORDS:
                 truncation_info[tool_name] = {"total": total, "shown": min(actual_count, MAX_RECORDS)}
                 data[tool_name] = records[:MAX_RECORDS]
+
+    if invoice_matches:
+        for tn, match in invoice_matches.items():
+            mr = match.get("matched_record", {})
+            target_inv = match.get("_invoice_target", "").lower()
+            if tn in data and isinstance(data[tn], list) and target_inv:
+                still_present = any(
+                    str(r.get("invoiceNo", "")).lower() == target_inv
+                    for r in data[tn] if isinstance(r, dict)
+                )
+                if not still_present and mr:
+                    data[tn].insert(0, mr)
+                    if tn in truncation_info:
+                        truncation_info[tn]["shown"] = len(data[tn])
 
     if not ctx.get("focus_entity"):
         total_records = sum(len(v) for v in data.values() if isinstance(v, list))

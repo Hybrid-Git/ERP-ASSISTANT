@@ -22,9 +22,9 @@ normalizer_llm = ChatOpenAI(
     max_tokens=256,
     timeout=60,
 
-    # extra_body={
-    #     "keep_alive": "30m",
-    # },
+    extra_body={
+        "keep_alive": "5m",
+    },
 )
 llm = ChatOpenAI(
     model= os.getenv("LLM_MODEL") ,
@@ -33,22 +33,23 @@ llm = ChatOpenAI(
     temperature=0.0,
     max_tokens=4096,
     timeout=120,
+    disable_streaming="tool_calling",
 
-    # extra_body={
-    #     "keep_alive": "30m",
-    # },
+    extra_body={
+        "keep_alive": "5m",
+    },
 )
 summary_llm = ChatOpenAI(
     model= os.getenv("SUMMARY_LLM_MODEL") ,
     base_url= os.getenv("SUMMARY_BASE_URL"),
     api_key= os.getenv("SUMMARY_MODEL_API_KEY"),
-    temperature=0.0,
+    temperature=0.9,
     max_tokens=4096,
     timeout=120,
 
-    # extra_body={
-    #     "keep_alive": "30m",
-    # },
+    extra_body={
+        "keep_alive": "5m",
+    },
 )
 
 print(f"LLM model loaded: {llm.model}")

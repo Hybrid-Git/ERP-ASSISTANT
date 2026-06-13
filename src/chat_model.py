@@ -2,6 +2,8 @@ import json
 import re
 import time
 import uuid
+import traceback
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage,ToolMessage
 from src.schema import MainState
@@ -372,21 +374,16 @@ async def chat_model_node(state: MainState):
             if query_type == "ood":
                 ood_prompt = (
                     "You are an ERP assistant. The user asked something OUTSIDE your domain.\n"
-                    "CRITICAL: Do NOT answer the user's question. You do NOT have this information.\n"
-                    "Instead, politely refuse firmly and immediately redirect to what you CAN help with.\n"
-                    "Say something like: "
-                    "'Sorry, I can only help with business and accounting data — customers, stock, "
-                    "GST, invoices, sales, TDS/TCS, and similar. I cannot answer that. "
-                    "Is there something specific you'd like to check in your business data?'\n"
-                    "Be friendly — don't sound robotic or defensive. "
-                    "Keep it to 2-3 short sentences. "
+                    "Do NOT answer their question. You do NOT have that information.\n"
+                    "Politely redirect to what you CAN help with: customers, stock, GST, "
+                    "invoices, sales, TDS/TCS, and related business data.\n"
+                    "Be friendly and natural. 2-3 short sentences. Vary your phrasing each time.\n"
                     "Speak in the same language as the user (English or Hinglish).\n"
                      "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
                      "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
                      "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
                      "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-                    "CRITICAL: Do NOT answer the question. Do NOT provide any information about the asked topic.\n"
-                    "Always end with a redirect to what you CAN help with.\n"
+                    "CRITICAL: Do NOT answer the question. Always end by redirecting.\n"
                     "/no_think"
                 )
                 try:
@@ -398,6 +395,32 @@ async def chat_model_node(state: MainState):
                 except Exception:
                     reason = "I'm an ERP assistant — I can help with customers, stock, GST, TDS, invoices, and sales data. Could you ask about any of these?"
                 print(f"[CHAT MODEL] OOD response: {reason}")
+                return {
+                    "messages": [HumanMessage(content=user_query), AIMessage(content=reason)],
+                    "memory_answer": reason,
+                    "loop_count": loop_count + 1,
+                }
+
+            if query_type == "conversational":
+                conv_prompt = (
+                    "You are a friendly ERP assistant having a casual chat with the user.\n"
+                    "Respond naturally, warmly, and conversationally. 1-2 short sentences.\n"
+                    "Vary your responses each time — don't repeat the same phrases.\n"
+                    "Do NOT mention tools, APIs, or technical details.\n"
+                    "If they greet you, greet back. If they ask how you are, respond warmly.\n"
+                    "Keep it light and human-like. End with a natural invitation to help.\n"
+                    "Speak in the same language the user used (English or Hinglish).\n"
+                    "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
+                    "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
+                    "Do NOT use Devanagari (Hindi script) or any non-Latin characters.\n"
+                    "/no_think"
+                )
+                resp = await summary_llm.ainvoke([
+                    SystemMessage(content=conv_prompt),
+                    HumanMessage(content=state.get("original_query", "")),
+                ])
+                reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
+                print(f"[CHAT MODEL] Conversational response: {reason}")
                 return {
                     "messages": [HumanMessage(content=user_query), AIMessage(content=reason)],
                     "memory_answer": reason,
@@ -482,14 +505,14 @@ async def chat_model_node(state: MainState):
             msg for msg in state.get("messages", [])
             if not isinstance(msg, SystemMessage)
         ]
-        # keeps last 6 messages for conversation context
-        if len(chat_history) > 6:
-            print(f"[TRIM] Truncating chat history from {len(chat_history)} to last 6 messages")
+        # keeps last 4 messages for conversation context
+        if len(chat_history) > 4:
+            print(f"[TRIM] Truncating chat history from {len(chat_history)} to last 4 messages")
             # Keep a summary context message if available
             if summary:
-                chat_history = [SystemMessage(content=f"Previous conversation summary: {summary[:500]}")] + chat_history[-6:]
+                chat_history = [SystemMessage(content=f"Previous conversation summary: {summary[:500]}")] + chat_history[-4:]
             else:
-                chat_history = chat_history[-6:]
+                chat_history = chat_history[-4:]
         for i, msg in enumerate(chat_history):
             if msg.type == "tool" and len(msg.content)>200:
                 tool_name = msg.name or "tool"
@@ -530,10 +553,36 @@ async def chat_model_node(state: MainState):
 
             step = now()
             print(f"[6] Invoking LLM with bind_tools (round {retry_count}, tools: {[t.name for t in remaining_tools]})...")
+
+            # Debug: log the tool schemas being sent
             try:
-                response = await llm.bind_tools(remaining_tools).ainvoke(loop_input)
+                tool_schemas = [convert_to_openai_tool(t, strict=False) for t in remaining_tools]
+                print(f"[BIND_TOOLS] model={llm.model}, tool_count={len(tool_schemas)}")
+                print(f"[BIND_TOOLS] schemas={json.dumps(tool_schemas, indent=2)[:3000]}")
+            except Exception as schema_e:
+                print(f"[BIND_TOOLS] Error building schema preview: {schema_e}")
+
+            try:
+                response = await llm.bind_tools(remaining_tools, strict=False).ainvoke(loop_input)
             except Exception as e:
                 print(f"[RETRY ERROR] {e} — preserving round {retry_count - 1} results")
+                print(f"[RETRY ERROR TRACEBACK] {traceback.format_exc()}")
+                # Probe 1: try WITHOUT tool binding to distinguish server vs tool issue
+                print("[PROBE] Sending same messages WITHOUT bind_tools...")
+                try:
+                    probe = await llm.ainvoke(loop_input)
+                    print(f"[PROBE] Plain call succeeded: type={type(probe).__name__}, "
+                          f"content={repr(str(getattr(probe, 'content', ''))[:200])}, "
+                          f"tool_calls={getattr(probe, 'tool_calls', None)}")
+                except Exception as probe_e:
+                    print(f"[PROBE] Plain call ALSO failed: {probe_e}")
+                # Probe 2: minimal health check
+                print("[PROBE2] Minimal 'Say OK' health check...")
+                try:
+                    probe2 = await llm.ainvoke([SystemMessage(content="Say OK")])
+                    print(f"[PROBE2] Works: {repr(probe2.content)[:100]}")
+                except Exception as probe2_e:
+                    print(f"[PROBE2] FAILED: {probe2_e}")
                 break
             print(f"[6] LLM invoke completed: {sec(step)}s")
             log_token_usage(response, "chat_model")
@@ -600,15 +649,32 @@ async def chat_model_node(state: MainState):
                         f"None of these tools perfectly match, but you MUST pick the MOST RELEVANT one and call it. "
                         f"Do NOT refuse. Choose the tool whose purpose best aligns with: {user_query}"
             )
-            fallback_response = await llm.bind_tools(remaining_tools).ainvoke([
-                llm_input[0], HumanMessage(content=user_query), fallback_msg
-            ])
-            fallback_calls = getattr(fallback_response, "tool_calls", None) or []
-            for call in fallback_calls:
-                name = call.get("name", "")
-                if name:
-                    called_names.add(name)
-                all_raw_calls.append(call)
+            try:
+                print(f"[FALLBACK BIND_TOOLS] tools={[t.name for t in remaining_tools]}")
+                try:
+                    fb_schemas = [convert_to_openai_tool(t, strict=False) for t in remaining_tools]
+                    print(f"[FALLBACK BIND_TOOLS] schemas={json.dumps(fb_schemas, indent=2)[:2000]}")
+                except Exception as fb_schema_e:
+                    print(f"[FALLBACK BIND_TOOLS] schema preview error: {fb_schema_e}")
+                fallback_response = await llm.bind_tools(remaining_tools, strict=False).ainvoke([
+                    llm_input[0], HumanMessage(content=user_query), fallback_msg
+                ])
+                fallback_calls = getattr(fallback_response, "tool_calls", None) or []
+                for call in fallback_calls:
+                    name = call.get("name", "")
+                    if name:
+                        called_names.add(name)
+                    all_raw_calls.append(call)
+            except Exception as e:
+                print(f"[FALLBACK ERROR] {e}")
+                print(f"[FALLBACK ERROR TRACEBACK] {traceback.format_exc()}")
+                print("[FALLBACK PROBE] Sending without bind_tools...")
+                try:
+                    fb_probe = await llm.ainvoke([llm_input[0], HumanMessage(content=user_query), fallback_msg])
+                    print(f"[FALLBACK PROBE] OK: type={type(fb_probe).__name__}, content={repr(str(getattr(fb_probe, 'content', ''))[:200])}")
+                except Exception as fb_probe_e:
+                    print(f"[FALLBACK PROBE] FAILED: {fb_probe_e}")
+                fallback_calls = []
             if fallback_calls:
                 print(f"[FALLBACK] LLM produced {len(fallback_calls)} tool call(s): {[c.get('name') for c in fallback_calls]}")
                 response = fallback_response
@@ -777,10 +843,13 @@ async def chat_model_node(state: MainState):
                             existing_filters["closingQty"] = {"gte": min_val, "lte": max_val}
                             new_args["filters"] = existing_filters
                             term_val = new_args.get("term")
-                            if term_val and re.fullmatch(r'-?\d+(?:\.\d+)?(?:\s*[-–]\s*-?\d+(?:\.\d+)?)?', str(term_val)):
-                                print(f"[RANGE-FILTER] {name}: cleared hallucinated term='{term_val}'")
-                                del new_args["term"]
-                            print(f"[RANGE-FILTER] {name}: injected closingQty range {min_val}–{max_val}")
+                            if term_val:
+                                print(f"[RANGE-FILTER] {name}: cleared term='{term_val}' (range filter injected)")
+                                # del new_args["term"]
+                                new_args["term"] = ""
+                                worker_extra.pop("term",None)
+                            new_args["limit"] = max(new_args.get("limit", 10), 1000)
+                            print(f"[RANGE-FILTER] {name}: injected closingQty range {min_val}–{max_val}, limit={new_args['limit']}")
                         except (ValueError, TypeError):
                             pass
             if name == "get_customer":

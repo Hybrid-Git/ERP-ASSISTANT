@@ -2,8 +2,11 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, RemoveMessage
 from src.schema import MainState
 from src.config import summary_llm
-
-
+import re
+import os
+from dotenv import load_dotenv
+load_dotenv()
+limit = int(os.getenv("summary_limit"))
 @traceable(name="summarization_node", run_type="chain")
 async def summarization_node(state: MainState):
     print("Summarization node activated............")
@@ -11,7 +14,7 @@ async def summarization_node(state: MainState):
     current_summary = state.get("summary", "")
     try:
         human_indices = [i for i, msg in enumerate(messages) if isinstance(msg, HumanMessage)]
-        if len(human_indices) < 6:
+        if len(human_indices) < limit:
             print(f"Summary skipped............... Only {len(human_indices)} human messages so far.")
             return {}
 
@@ -47,7 +50,24 @@ async def summarization_node(state: MainState):
             new_summary = "... (truncated) ...\n\n" + tail
 
         delete_messages = [RemoveMessage(id=msg.id) for msg in messages_to_summarize if msg.id]
-        print(f"Deleting {len(delete_messages)} old messages")
+
+        # Compress ToolMessages in the remaining last turn
+        remaining = [m for m in messages[cutoff_index:] if not isinstance(m, SystemMessage)]
+        for msg in remaining:
+            if isinstance(msg, ToolMessage) and len(msg.content) > 200:
+                record_count = msg.content.count('"id":') or msg.content.count('"name":') or 0
+                limit_match = re.search(r'"limit":\s*(\d+)', msg.content)
+                summary_text = f"Tool {msg.name} returned {record_count} record(s)"
+                if limit_match:
+                    summary_text += f" (limited to {limit_match.group(1)})"
+                delete_messages.append(RemoveMessage(id=msg.id))
+                delete_messages.append(ToolMessage(
+                    content=summary_text,
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                ))
+
+        print(f"Deleting and compressing: {len(delete_messages)} operations")
         return {
             "summary": new_summary,
             "messages": delete_messages,

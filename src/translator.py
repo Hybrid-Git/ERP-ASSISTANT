@@ -6,6 +6,7 @@ from src.schema import MainState
 from src.config import normalizer_llm
 from src.utils import log_token_usage, extract_json_object, NON_ENGLISH_HINTS, MULTILINGUAL_WORDS, ROUTE_KEYWORDS, INVOICE_PATTERNS, INVOICE_NO_PATTERNS
 from src.prompts import TRANSLATOR_PROMPT_BASE, META_QUESTION_PATTERNS_GLOBAL, HINGLISH_PRONOUNS, DONO_PRONOUNS, INVOICE_DOC_MAP
+from src.semantic_search import classify_domains
 
 
 def _has_own_identifiers(query: str) -> bool:
@@ -55,21 +56,30 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
 
     entities = (conv_ctx or {}).get("entities", [])
     if entities:
-        is_plural = any(re.search(rf'\b{re.escape(p)}\b', query.lower()) for p in DONO_PRONOUNS)
-        if is_plural and len(entities) >= 2:
-            names = [e.get("name", "") for e in entities[-2:] if e.get("name")]
-            if len(names) >= 2:
+        _skip_entity_resolve = False
+        last_entity = entities[-1]
+        entity_domain = last_entity.get("domain", "")
+        if entity_domain:
+            query_domains, _ = classify_domains(query, [])
+            if query_domains and entity_domain not in query_domains:
+                print(f"[PRONOUN] Domain mismatch: entity domain '{entity_domain}' vs query domains {query_domains} — skipping")
+                _skip_entity_resolve = True
+        if not _skip_entity_resolve:
+            is_plural = any(re.search(rf'\b{re.escape(p)}\b', query.lower()) for p in DONO_PRONOUNS)
+            if is_plural and len(entities) >= 2:
+                names = [e.get("name", "") for e in entities[-2:] if e.get("name")]
+                if len(names) >= 2:
+                    resolved = query
+                    replacement = f"{names[0]} aur {names[1]}"
+                    for p in found:
+                        resolved = re.sub(rf'\b{re.escape(p)}\b', replacement, resolved, flags=re.IGNORECASE)
+                    return resolved, [{"original": p, "resolved": replacement, "type": "any"} for p in found]
+            name = entities[-1].get("name", "")
+            if name:
                 resolved = query
-                replacement = f"{names[0]} aur {names[1]}"
                 for p in found:
-                    resolved = re.sub(rf'\b{re.escape(p)}\b', replacement, resolved, flags=re.IGNORECASE)
-                return resolved, [{"original": p, "resolved": replacement, "type": "any"} for p in found]
-        name = entities[-1].get("name", "")
-        if name:
-            resolved = query
-            for p in found:
-                resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
-            return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
+                    resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
+                return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
 
     if last_tool:
         for tname, targs in last_tool.items():

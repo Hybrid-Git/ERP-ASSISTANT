@@ -90,6 +90,11 @@ CAPABILITY_PATTERNS = [
     r"(aap|tu|tum) kya (provide|de) (kar sakte|kar sakta|karte ho)",
     r"(aap|tu|tum) (kya|kaunse) (product|service|feature|suvidha) (de sakte|provide kar sakte|dete)",
     r"(kya|kaunsi|kaunse) (cheeze|cheezein|services|facilities|features) (hai|hain|provide karte)",
+
+    r"(tu|tum|aap)\s+(kaun|kon)\s+(hai|ho)",
+    r"who\s+(are|r)\s+(you|u)",
+    r"(aap|tu|tum)\s+kya\s+(ho|hai)",
+    r"aap\s+kaun\s+hain",
 ]
 
 # Minimal OOD topic safety net — catches clearly non-ERP queries missed by embedding similarity

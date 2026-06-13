@@ -48,6 +48,13 @@ def _strip_hallucinated_values(text: str, tool_data: dict, original_query: str =
     if not actual_fields:
         return text
     query_tokens = set(re.findall(r'\b\w+\b', original_query.lower()))
+    known_field_like_values = {
+        "b2b", "b2cLarge", "b2cSmall", "b2cs", "b2cl", "exports",
+        "nillRated", "nilRated", "nillrated", "nilrated",
+        "creditNotesRegistered", "creditNotesUnregistered",
+        "creditnotesregistered", "creditnotesunregistered",
+        "grandTotal", "grandtotal", "exempted", "sez",
+    }
     field_like = re.compile(r'\b[a-z]+[A-Z][a-zA-Z]*\b|\b[A-Z][a-z]+[A-Z][a-zA-Z]*\b|\b[a-zA-Z]+_[a-zA-Z]+\b')
     sentences = re.split(r'(?<=[.!?।])\s+', text)
     cleaned = []
@@ -56,11 +63,11 @@ def _strip_hallucinated_values(text: str, tool_data: dict, original_query: str =
             continue
         words = set(m.group(0).lower() for m in field_like.finditer(sent))
         hallucinated = any(
-            w not in actual_fields and w not in query_tokens
+            w not in actual_fields and w not in query_tokens and w not in known_field_like_values
             for w in words
         )
         if hallucinated:
-            print(f"[HALLUCINATION] Stripped sentence containing invented field(s): {words - actual_fields} | sentence: {sent.strip()[:100]}")
+            print(f"[HALLUCINATION] Stripped sentence containing invented field(s): {words - actual_fields - known_field_like_values} | sentence: {sent.strip()[:100]}")
         else:
             cleaned.append(sent)
     result = " ".join(cleaned).strip()
@@ -115,15 +122,13 @@ async def response_generation_node(state: MainState):
     ))
 
     system_prompt = (
-        "You are an ERP assistant. Reply short, natural, in the user's language. Use ONLY TOOL RESULTS below.\n"
-        "Personality: warm, conversational. Mirror user's language. Never say 'As an AI'. "
-        "End with '.' unless user used '?'.\n"
-        "If multiple tools returned data, answer only from the tool(s) relevant to the user's question.\n"
-        "NEVER output JSON/code. NEVER invent fields or values.\n"
-        "NO headings ('Summary:', 'Details:', etc.), NO meta-framing ('Based on...', 'Here are...'), "
-        "NO bullet points unless user asked for a list. "
-        "If tool results are empty, say 'data nahi mila' / 'kuch nahi mila'. "
-        "Answer only what was asked, 1-3 sentences.\n"
+        "You are an ERP assistant. Reply using ONLY the tool results below.\n"
+        "Vary your tone and sentence structure — don't sound the same every time. "
+        "Mirror the user's language (Hinglish if they used it, English if they did). "
+        "Never say 'As an AI'. Never invent fields or values. "
+        "No JSON/code. No headings like 'Summary:' or 'Details:'. "
+        "If tool results are empty, say it plainly ('data nahi mila' / 'kuch nahi mila'). "
+        "Answer only what was asked. Be conversational, not templated.\n"
     )
     if previous_summary:
         system_prompt += f"Background conversation:\n{previous_summary}\n\n"
@@ -148,21 +153,12 @@ async def response_generation_node(state: MainState):
         system_prompt += "LANGUAGE: Reply in English.\n"
 
     system_prompt += (
-        "End with '.' not '?' (facts are not questions). "
         "Never invent fields/values — TOOL RESULTS are the ONLY truth. "
-        "WRONG: 'productId F12 ka qty 5 se jada hai'\nCORRECT: 'is baare mein data nahi mila'\n"
-        "No headings, no meta-framing ('Based on...', 'Here are...', 'In summary...'). "
-        "WRONG: 'Sales Invoices Summary: AI/0324/0010 ka netAmount 29315.7'\nCORRECT: 'AI/0324/0010 ka netAmount 29315.7'\n"
-        "If data is empty, say 'data/kuch nahi mila'. "
+        "If data is empty, say 'data nahi mila' / 'kuch nahi mila'. "
         "Report ALL matching records, never omit duplicates. "
-        "WRONG: 'PR-269 ka net 3292.7'\nCORRECT: 'PR-269 ke 2 records: Bigfoot 3292.7, Amazon 1215.95'\n"
         "For multi-part queries, answer each part. "
-        "When one tool has the exact record, ignore other tool outputs. "
-        "WRONG: 'Purchase has 684 records but Sales has AI/0324/0010'\nCORRECT: 'AI/0324/0010 ka netAmount 29315.7'\n"
         "For detail requests: include EVERY field from the record. "
-        "For truncation: just say total count and ask if they want more. No 'Add a filter'. "
-        "WRONG: 'Showing first 10 of 854. Add a filter.'\nCORRECT: 'Aapke 27 records hain. Dikhaun?'\n"
-        "Show max 5 fields per record for list queries, all fields for detail queries. "
+        "For truncation: say the total count and ask if they want more. "
         "Only show data from TOOL RESULTS — no summaries/aggregates of hidden records. "
         "End with a natural follow-up unless query was a yes/no/command.\n"
     )
@@ -202,19 +198,13 @@ async def response_generation_node(state: MainState):
                 final_response_prompt["data"] = filtered
 
     detail_mode = bool(re.search(
-        r'\b(all details?|sabhi detail|saari detail|full info|complete info|sara detail|poora detail|saare detail)\b',
+        r'\b(all details?|detailed|sabhi detail|saari detail|full info|complete info|sara detail|poora detail|saare detail|pura detail|puri detail|pura detailed|puri detailed|poora detailed)\b',
         original_query, re.IGNORECASE
     ))
 
     invoice_match = final_response_prompt.pop("_invoice_match", None)
     if invoice_match and isinstance(invoice_match, dict):
-        matched_tool = invoice_match.get("tool_name", "")
-        if matched_tool and matched_tool in final_response_prompt.get("data", {}):
-            filtered_data = {matched_tool: final_response_prompt["data"][matched_tool]}
-            final_response_prompt["data"] = filtered_data
-            summary_text = make_summary(filtered_data, [])
-            summary_text = re.sub(r'^[^:]+:\s*', '', summary_text)
-            summary_text = re.sub(r'; [^:]+:\s*', '; ', summary_text)
+        detail_mode = True
     final_response_prompt.pop("summary", None)
     final_response_prompt.pop("_invoice_match", None)
     data = final_response_prompt.get("data", {})
@@ -265,6 +255,8 @@ async def response_generation_node(state: MainState):
         "get_top_customer": "top_customers",
         "get_item_details": "items",
         "search_ledger": "ledger_matches",
+        "get_outstanding_purchase_invoices": "outstanding_purchase_invoices",
+        "get_overdue_invoices": "overdue_invoices",
     }
     tool_data = final_response_prompt.get("data", {})
     if isinstance(tool_data, dict):
@@ -292,6 +284,7 @@ async def response_generation_node(state: MainState):
             "slow_moving_products": ["name", "closingQty"],
             "search_vendors": ["name"],
             "tds_outstanding": ["category", "amount"],
+            "outstanding_purchase_invoices": ["invoiceNo", "netAmount", "outstanding"],
             "tcs_outstanding": ["category", "amount"],
             "overdue_invoices": ["invoiceNo", "netAmount", "outstanding"],
         }
