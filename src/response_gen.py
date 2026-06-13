@@ -162,6 +162,18 @@ async def response_generation_node(state: MainState):
         "Only show data from TOOL RESULTS — no summaries/aggregates of hidden records. "
         "End with a natural follow-up unless query was a yes/no/command.\n"
     )
+
+    intent = state.get("query_intent", "sample")
+    if intent == "count":
+        system_prompt += (
+            "CRITICAL — This is a COUNT query. Report the TOTAL count from the 'MORE RECORDS AVAILABLE' note. "
+            "Say 'aapke paas X records hain'. Do NOT say the truncated/shown count is the total.\n"
+        )
+    elif intent == "aggregate":
+        system_prompt += (
+            "CRITICAL — This is an AGGREGATE query. Use ALL available records to compute totals. "
+            "If data is truncated, mention the total count and that values are based on shown records only.\n"
+        )
     if list_mode:
         system_prompt += (
             "LIST MODE: Format each record as '- ' bullet. "

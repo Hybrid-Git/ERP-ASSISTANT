@@ -446,7 +446,11 @@ async def deterministic_final_node(state: MainState):
                          "dikha dijiye", "haan", "hmm", "theek hai"}
     wants_all = any(kw in combined_q for kw in show_all_keywords)
 
-    MAX_RECORDS = 200 if wants_all else get_cfg("thresholds", "max_records", default=10)
+    intent = state.get("query_intent", "sample")
+    intent_max = {"count": 500, "aggregate": 500, "list_all": 500, "comparison": 200, "detail": 200, "sample": 10, "extreme": 1}
+    MAX_RECORDS = intent_max.get(intent, 10)
+    if wants_all and MAX_RECORDS < 200:
+        MAX_RECORDS = 200
     truncation_info = {}
     for tool_name, records in data.items():
         if isinstance(records, list):

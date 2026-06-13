@@ -36,6 +36,7 @@ class MainState(TypedDict):
     unsupported_reason: str  # stores reason when query is out of domain
     resolved_entities: List[dict]  # entities resolved by translator (pronoun→name)
     query_type: str  # erp_query | conversational | mixed | greeting | capability | ood
+    query_intent: str  # count | aggregate | list_all | comparison | detail | sample | extreme
     
 class OutputState(TypedDict):
     final_response: str

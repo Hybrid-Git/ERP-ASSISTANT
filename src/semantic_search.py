@@ -48,6 +48,21 @@ def _filter_registry_by_domain(domains: set[str]) -> dict:
     return filtered
 
 
+def _classify_intent(*queries: str) -> str:
+    combined = " ".join(q for q in queries if q).lower()
+    if re.search(r'\b(?:total\s+(?!kitne)\w+|kul\s+(?!kitne)\w+|sabka\s+\w+|aggregate|sum|total amount|grand total|overall)\b', combined):
+        return "aggregate"
+    if re.search(r'\b(?:kitne|kitna|kittna|kittne|how many|total count|kul kitne|kul kitna|count)\b', combined):
+        return "count"
+    if re.search(r'\b(?:sab|saare|sare|saari|poora|puri|all |every |each |complete list|full list)\b', combined):
+        return "list_all"
+    if re.search(r'\b(?:antar|difference|compar|vs |versus|donon|dono)\b', combined):
+        return "comparison"
+    if re.search(r'\b(?:detail|details|vistrit|vistar\s+se)\b', combined):
+        return "detail"
+    return "sample"
+
+
 def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     if not _tool_embeddings:
         _build_tool_embeddings()
@@ -450,11 +465,13 @@ async def semantic_search(state: MainState) -> MainState:
 
         if selected_tools:
             print(f"Final selected tools: {selected_tools}")
+            query_intent = _classify_intent(original_query, canonical_query)
             return {
                 "retrieved_tools": selected_tools,
                 "selected_tools": selected_tools,
                 "query_parts": query_parts,
                 "skip_router": True,
+                "query_intent": query_intent,
             }
 
         # Before marking OOD, check if query has ERP context from conversation history
@@ -466,11 +483,13 @@ async def semantic_search(state: MainState) -> MainState:
                     if tool_name and tool_name in tools_dict:
                         print(f"Using tool from conversation history: {tool_name}")
                         selected_tools = [tool_name]
+                        query_intent = _classify_intent(original_query, canonical_query)
                         return {
                             "retrieved_tools": selected_tools,
                             "selected_tools": selected_tools,
                             "query_parts": query_parts,
                             "skip_router": True,
+                            "query_intent": query_intent,
                         }
 
         # Check OOD topics as negative filter (clearly non-ERP content)

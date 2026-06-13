@@ -122,7 +122,8 @@ def _build_capability_text() -> str:
         cleaned = re.sub(r"IMPORTANT:.*?(?:\.|;|$)", "", desc)
         cleaned = re.sub(r"(Do|Use)\s+NOT.*?(?:\.|;|$)", "", cleaned)
         cleaned = re.sub(r"(?:use|call)\s+`?\w+`?\s+(?:instead|to|first).*?(?:\.|;|$)", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\b(get|fetch|search)_\w+\b", "", cleaned)
+        tool_label = tname.replace("get_", "").replace("_", " ").title()
+        cleaned = f"{tool_label}: {desc}"
         cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".,; ")
         if cleaned and cleaned.lower() not in seen:
             seen.add(cleaned.lower())
@@ -299,23 +300,18 @@ async def chat_model_node(state: MainState):
                 caps_text = _build_capability_text()
                 cap_prompt = (
                     "You are an ERP assistant. The user asked about what you can do.\n"
-                    "Describe your capabilities conversationally, like a helpful human.\n"
-                    "Here are your capabilities — describe them naturally, NEVER mention tool names, API calls, or technical details:\n"
+                    "Here is a list of everything I can help with — present it to the user in a friendly, readable way.\n"
+                    "Group related items under simple headings (Customers, Stock, GST, Invoices, TDS/TCS, Reports, etc).\n"
                     f"{caps_text}\n\n"
-                    "Explain in a natural, friendly way — not as a list of technical features. "
-                    "Say something like 'I can help you look up customers, check stock levels, "
-                    "view GST reports, find outstanding invoices, and much more.' "
-                    "Give specific examples of what you can do in each area. "
-                     "Keep it to 3-5 sentences. Be inviting and conversational. "
+                    "Format it with short headings and 1-line descriptions per item. "
+                    "Keep it clean and conversational — no tool names or tech jargon. "
+                    "End with a natural question asking which one they'd like help with, like "
+                     "'Kaunsa dekhna hai?' or 'Which one would you like me to look up?'\n"
                      "Speak in the same language as the user (English or Hinglish).\n"
                      "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
                      "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
                      "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
                      "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-                     "Do NOT mention tool names, APIs, or technical details.\n"
-                     "CRITICAL: Always end your reply with a natural follow-up invitation like "
-                     "'What would you like me to look up?' or 'Kya aap kuch dekhna chahenge?' "
-                     "or 'Batao kya chahiye aapko?'\n"
                     "/no_think"
                 )
                 try:
@@ -342,10 +338,10 @@ async def chat_model_node(state: MainState):
                     f"{caps_text}\n\n"
                     "Write 3-5 friendly, conversational sentences covering the main areas. "
                     "Give specific examples of what you can do. "
-                    "Say something like: 'I can help with a lot of things! You can ask me about customers "
-                    "— I can search by name or city and get their details. I can check stock levels "
-                    "for any product or HSN code. I can show GST reports, outstanding invoices, "
-                     "sales summaries, and much more. What exactly would you like to look up?'\n"
+                    # "Say something like: 'I can help with a lot of things! You can ask me about customers "
+                    # "— I can search by name or city and get their details. I can check stock levels "
+                    # "for any product or HSN code. I can show GST reports, outstanding invoices, "
+                    #  "sales summaries, and much more. What exactly would you like to look up?'\n"
                      "Speak in the same language as the user (English or Hinglish).\n"
                      "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
                      "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
@@ -372,18 +368,23 @@ async def chat_model_node(state: MainState):
                 }
 
             if query_type == "ood":
+                caps_text = _build_capability_text()
                 ood_prompt = (
-                    "You are an ERP assistant. The user asked something OUTSIDE your domain.\n"
-                    "Do NOT answer their question. You do NOT have that information.\n"
-                    "Politely redirect to what you CAN help with: customers, stock, GST, "
-                    "invoices, sales, TDS/TCS, and related business data.\n"
-                    "Be friendly and natural. 2-3 short sentences. Vary your phrasing each time.\n"
-                    "Speak in the same language as the user (English or Hinglish).\n"
+                    "You are an ERP assistant. The user asked something outside my domain.\n"
+                    "Do NOT answer their question. I do NOT have that information.\n"
+                    "Here is a list of everything I CAN help with — present it to the user in a friendly, readable way.\n"
+                    "Group related items under simple headings (Customers, Stock, GST, Invoices, TDS/TCS, Reports, etc).\n"
+                    f"{caps_text}\n\n"
+                    "Format it with short headings and 1-line descriptions per item. "
+                    "Keep it clean and conversational — no tool names or tech jargon. "
+                    "End with a natural question asking which one they'd like help with, like "
+                     "'Kaunsa dekhna hai?' or 'Which one would you like me to look up?'\n"
+                     "Speak in the same language as the user (English or Hinglish).\n"
                      "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
                      "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
                      "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
                      "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-                    "CRITICAL: Do NOT answer the question. Always end by redirecting.\n"
+                    "CRITICAL: Do NOT answer the question. Always end by asking what they want to look up.\n"
                     "/no_think"
                 )
                 try:
@@ -393,7 +394,7 @@ async def chat_model_node(state: MainState):
                     ])
                     reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
-                    reason = "I'm an ERP assistant — I can help with customers, stock, GST, TDS, invoices, and sales data. Could you ask about any of these?"
+                    reason = "I only work with business data. I can help you search customers, check stock, view GST reports, find invoices, and more. What would you like to look up?"
                 print(f"[CHAT MODEL] OOD response: {reason}")
                 return {
                     "messages": [HumanMessage(content=user_query), AIMessage(content=reason)],
@@ -887,10 +888,21 @@ async def chat_model_node(state: MainState):
             if re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum)\b', combined_q) and not re.search(r'\b(top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q):
                 if "limit" not in new_args or new_args.get("limit", 10) > 5:
                     new_args["limit"] = 1
-            if "limit" in new_args and isinstance(new_args.get("limit"), int) and new_args["limit"] <= 10:
-                if not re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum|top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q):
-                    new_args["limit"] = 50
-                    print(f"[LIMIT] {name}: raised limit from 10 to 50")
+            elif "limit" in new_args and isinstance(new_args.get("limit"), int):
+                intent = state.get("query_intent", "sample")
+                intent_limits = {
+                    "count": 10000,
+                    "aggregate": 10000,
+                    "list_all": 10000,
+                    "comparison": 1000,
+                    "detail": 200,
+                    "sample": 50,
+                    "extreme": 1,
+                }
+                target = intent_limits.get(intent, 50)
+                if new_args["limit"] < target:
+                    new_args["limit"] = target
+                    print(f"[LIMIT] {name}: {intent} intent — raised limit to {target}")
             if name == "get_gst_summary" or name in ("get_tds_outstanding", "get_tcs_outstanding"):
                 print(f"[{name.upper()} FINAL ARGS] {json.dumps(new_args, default=str)}")
             return {"name": name, "args": new_args}

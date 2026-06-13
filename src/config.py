@@ -43,7 +43,7 @@ summary_llm = ChatOpenAI(
     model= os.getenv("SUMMARY_LLM_MODEL") ,
     base_url= os.getenv("SUMMARY_BASE_URL"),
     api_key= os.getenv("SUMMARY_MODEL_API_KEY"),
-    temperature=0.9,
+    temperature=0.7,
     max_tokens=4096,
     timeout=120,
 

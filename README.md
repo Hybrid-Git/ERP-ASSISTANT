@@ -1,6 +1,6 @@
 # Chapter1-Assist
 
-A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the Chapter-1 backend API, and returning natural-language responses. Supports English, Hinglish (Hindi words in Latin script), and Hindi (Devanagari) input — responses always use Latin script (Hinglish for Hindi/Hinglish input, English for English input). Detects greetings and capabilities, routes vague queries to an ambiguous handler, formats list results as bullets, and silently rejects out-of-context queries.
+A FastAPI + LangGraph based ERP/accounting assistant that answers business-data queries by selecting the correct ERP tool, calling the Chapter-1 backend API, and returning natural-language responses. Supports English, Hinglish (Hindi words in Latin script), and Hindi (Devanagari) input — responses always use Latin script (Hinglish for Hindi/Hinglish input, English for English input). Detects greetings and capabilities, routes vague queries to an ambiguous handler, formats list results as bullets, silently rejects out-of-context queries, and classifies query intent (count/aggregate/list_all/comparison/detail/sample) to adapt fetch limits and response instructions.
 
 **Author:** Yash Sheth
 
@@ -31,7 +31,7 @@ All LLMs run locally via an OpenAI-compatible endpoint (Ollama, vLLM, etc.). Mod
 ```
 START
   -> translator            (optional Hinglish→English normalization — LLM; fast-path shortcuts for plain English)
-  -> semantic_search       (embedding recall + cross-encoder rerank + keyword fallback; detects greetings & meta-questions)
+  -> semantic_search       (embedding recall + cross-encoder rerank + keyword fallback + intent classification; detects greetings & meta-questions)
   -> chat_model            (LLM with bind_tools — native tool calling + retry loop + registry-driven repair layer;
                             falls back to memory_answer when no tools selected)
   -> routing_node          (conditional: tool_calls? → tools | memory_answer? → response_generation | else → END)
@@ -47,12 +47,12 @@ START
 | Node | Responsibility |
 |---|---|
 | `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — 3 fast-path shortcuts. Stores both `original_query` and `canonical_query`. |
-| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. Splits multi-intent queries. Detects greetings (12 patterns), capability questions (30+ patterns), meta-questions, and unsupported queries. Vague queries with no domain content (e.g. "list do", "batao", "show") route to ambiguous handler instead of selecting tools. Domain-content check uses `VAGUE_ACTION_WORDS` (40 English+Hinglish action words) to exclude generic verbs from domain detection. |
-| `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Missing tools are force-injected with domain-aware dedup (one tool per domain). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, multi-identifier expansion, and tool-alignment cross-domain guard. Falls back to `memory_answer` via summary LLM when no tools are selected. Special handlers for greeting, capability, ambiguous, and OOD queries each have an explicit LANGUAGE RULE prohibiting Devanagari output — responses always use Latin script (Hinglish or English). |
+| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. Splits multi-intent queries. Detects greetings (12 patterns), capability questions (30+ patterns), meta-questions, and unsupported queries. Vague queries with no domain content (e.g. "list do", "batao", "show") route to ambiguous handler instead of selecting tools. Domain-content check uses `VAGUE_ACTION_WORDS` (40 English+Hinglish action words) to exclude generic verbs from domain detection. Classifies query intent (`count`/`aggregate`/`list_all`/`comparison`/`detail`/`sample`) using pattern matching on simplified regex — affects fetch limits and response instructions downstream. |
+| `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Missing tools are force-injected with domain-aware dedup (one tool per domain). Raises API `limit` parameter per `query_intent` from state (count/aggregate/list_all → 10000, comparison → 1000, detail → 200, sample → 50, extreme → 1). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, multi-identifier expansion, and tool-alignment cross-domain guard. Falls back to `memory_answer` via summary LLM when no tools are selected. Special handlers for greeting, capability, ambiguous, and OOD queries each have an explicit LANGUAGE RULE prohibiting Devanagari output — responses always use Latin script (Hinglish or English). |
 | `routing_node` | Routes to `tools` if last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends. Falls through after `loop_count > 5`. |
 | `tools` | Executes tool functions against the Chapter-1 backend API via `ToolNode`. |
-| `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids`. Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities. |
-| `response_generation` | Generates natural-language response using summary LLM. Three display modes: default (5 records), list_mode (10 records with bullet formatting for queries with `list_words` like "sare", "sab", "list"), and detail_mode (20 records with all fields for "all details" queries). Language-aware system prompt enforces: Hinglish (Latin script) for any Hindi or Hinglish input, English for English input — no Devanagari output ever. Post-processes via `_clean_llm_response` (strips meta-framing/JSON). Falls back to summary text or minimal record count on error. |
+| `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids`. Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities. Sets `MAX_RECORDS` per `query_intent` from state (count/aggregate/list_all → 500, comparison/detail → 200, sample → 10, extreme → 1) with `wants_all` override to 200. |
+| `response_generation` | Generates natural-language response using summary LLM. Three display modes: default (5 records), list_mode (10 records with bullet formatting for queries with `list_words` like "sare", "sab", "list"), and detail_mode (20 records with all fields for "all details" queries). Intent-specific system prompt instructions: count queries report total from truncation note, aggregate queries use all records and mention if truncated. Language-aware system prompt enforces: Hinglish (Latin script) for any Hindi or Hinglish input, English for English input — no Devanagari output ever. Post-processes via `_clean_llm_response` (strips meta-framing/JSON). Falls back to summary text or minimal record count on error. |
 | `summarization` | After 6+ human messages, summarizes old context using summary LLM and deletes past messages via `RemoveMessage`. Strips `raw_response` from ToolMessage content before summary input. Caps summary at 16,000 characters. |
 
 ---
@@ -97,6 +97,22 @@ The `semantic_search_node` uses 12 greeting regex patterns (English + Hinglish: 
 
 Queries consisting of only generic action words with no domain noun (e.g. "list do", "batao", "show", "details do", "fetch it") are automatically routed to the **ambiguous handler**. A set of 40 `VAGUE_ACTION_WORDS` (English + Hinglish: "list", "show", "batao", "dikhao", "karo", "kuch", etc.) is subtracted from query tokens before checking against domain keywords. If no domain-specific content remains, the ambiguous handler responds with a friendly capabilities overview and asks the user to specify what they want. This prevents vague queries from auto-selecting ERP tools or reusing tools from conversation history.
 
+### Query Intent Classification
+
+The `semantic_search_node` classifies each query's intent using `_classify_intent()` — a lightweight regex function that runs before tool selection and sets `query_intent` in the state. The intent cascades through three downstream stages:
+
+| Intent | Trigger Keywords | API Limit (`chat_model`) | MAX_RECORDS (`deterministic_final`) | Response Instruction |
+|--------|-----------------|------------------------|-------------------------------------|----------------------|
+| `count` | kitne, kitna, how many, kul kitne, count | 10000 | 500 | Report total from "MORE RECORDS AVAILABLE" note |
+| `aggregate` | total + word, kul + !kitne, sabka, sum, overall | 10000 | 500 | Use all records for totals; mention if truncated |
+| `list_all` | sab, saare, all, every, complete list, full list | 10000 | 500 | Show all records |
+| `comparison` | antar, difference, vs, versus, dono | 1000 | 200 | Compare requested entities |
+| `detail` | detail, details, vistrit, vistar se | 200 | 200 | Show every field |
+| `sample` | (default — no keywords matched) | 50 | 10 | Show representative sample |
+| `extreme` | (handled by separate min/max regex in limit logic) | 1 | 1 | Show only the extreme value |
+
+Aggregate patterns use a negative lookahead `(?!kitne)` to prevent "total kitne / kul kitne" (count queries) from being misclassified as aggregate. The `query_intent` field flows through `MainState` (`src/schema.py`) and is consumed by `chat_model.py` (API limit), `deterministic_final.py` (MAX_RECORDS cap), and `response_gen.py` (system prompt instructions).
+
 ### List Mode & Detail Mode
 
 Three display modes controlled by query patterns:
@@ -106,6 +122,8 @@ Three display modes controlled by query patterns:
 | Default | — | 5 | Plain conversational sentences |
 | List mode | `list_words` from config.yaml ("sare", "saare", "sab", "list", "all", "jo jo", etc.) | 10 | Bullet points with 1-2 most relevant fields per record; total count mentioned; offers to show more |
 | Detail mode | "all details", "sabhi detail", "full info", "sara detail", etc. | 20 | Every field shown per record |
+
+The `query_intent` system overrides these default limits for patterns like count/aggregate/list_all (500 records) and comparison/detail (200 records). The `deterministic_final` node caps results at the lower of the mode limit and the intent-based `MAX_RECORDS`. See the [Query Intent Classification](#query-intent-classification) section for details.
 
 List mode is config-driven via `config.yaml` `list_words` (14 words/phrases).
 
@@ -171,7 +189,7 @@ When reducing the selected tool list to fit context limits, the trimmer preserve
 
 ### Generic Cross-Tool Corrections
 
-- **Min/max → limit=1**: "sabse kam/jyada", "least/most" → forces `limit=1`
+- **Min/max → limit=1**: "sabse kam/jyada", "least/most" → forces `limit=1` (classified as `extreme` intent)
 - **"Which entity?" → ensure name**: prepends `name` to fields
 - **Value-comparison filters**: "N se jyada/kam" → injects filter params
 - **Malformed filter key normalization**: "closingQty gt: 2" → `{"closingQty": {"gt": 2}}`
@@ -496,6 +514,7 @@ Do not commit `.env`, `venv/`, `__pycache__/`, or `chroma_db/`.
 - **Response generation model quality** — the `summary_llm` (same model as the worker) may occasionally output raw JSON instead of natural language; the `_clean_llm_response` post-processor and improved fallback mitigate this.
 - **Entity memory limited to direct-lookup tools** — aggregation tools (`get_top_customer`, `get_sales_trend`, `get_stock_levels`) are excluded from `conversation_context.entities` to prevent pronoun-pollution.
 - **Translator language detection** — the LLM-based translator may classify Latin-script Hinglish queries as "hindi"; a Devanagari unicode check overrides this to "hinglish", but edge cases with mixed scripts may still produce unexpected language classification.
+- **Query intent classification** — `_classify_intent()` uses simple regex patterns; complex queries like "sabse zyada stock wala total kitna hai" may hit the wrong intent tier (extreme vs count vs aggregate). Intent limits (10000 for count/aggregate) may cause API rejections on endpoints that cap results.
 
 ---
 
