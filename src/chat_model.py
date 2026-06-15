@@ -194,14 +194,13 @@ def build_system_prompt(
         "Must call a tool. Never answer in prose. No thinking output.",
         "",
         "STRICT ANTI-HALLUCINATION RULES:",
-        "- CRITICAL: Do NOT search for quantity/scope words. Never pass words like 'sara', 'sab', 'all', 'every', 'each', 'saare', 'poora', 'pure', 'sabhi', 'saari', 'sare', 'sari' as the 'search' or 'term' parameter. These describe scope ('all'/'every'), NOT entity names. If the user asks for 'all records', call the list tool without a search filter.",
-        "- CRITICAL: Never invent entity identifiers. Never pass an ID, name, or search term that you made up or inferred from non-entity words. Only use IDs/names that you have actually seen in prior tool results. If you lack a real ID, call a list/search tool first and extract the ID from its results — do not guess.",
-        "- CRITICAL: When the user's query has been updated to include specific entity names (e.g., resolved from pronouns like 'dono'), use ONLY those exact names as your search/term parameters. Do NOT use entity names from other previous tool results (e.g., top_customers, top_vendors) unless they match the resolved names. For example, if the resolved query says 'NYKAA... aur Nykaa Warehouse...', search for THOSE names only — NOT for B2CTELANGANA or any other name from get_top_customer.",
+        "- Never pass scope words (sab/saare/all/every/poore/saari) as search/term. They describe scope ('all'), not a name. For 'all records', call list without a search filter.",
+        "- Never invent IDs/names. Use ONLY identifiers from prior tool results. If missing, call a list tool first — never guess.",
+        "- When query has resolved entity names (e.g. from pronoun resolution), use ONLY those exact names as search/term. Do not pull unrelated names from other tools like top_customers.",
         "",
-        "FOLLOW-UP:",
-        "- Answer from prior results if available — no new call.",
-        "- When sort_field/sort_order available and user asks extreme values (highest, most, least, top, bottom), set sort_order: 'desc' for top, 'asc' for bottom.",
-        "- CRITICAL: Switching to a DIFFERENT tool? Clear ALL old params. Reuse only within the same tool.",
+        "FOLLOW-UP: Reuse prior results when possible. "
+        "For extremes (top/highest/least): sort_order 'desc'/'asc'. "
+        "CRITICAL: Clear ALL params when switching tools — reuse only within same tool.",
     ]
 
     check_query = f"{original_query} {user_query}" if original_query else user_query
@@ -213,7 +212,7 @@ def build_system_prompt(
             lines.append("--- RECENT TOOL CALLS (for follow-up context) ---")
             for call in recent_calls:
                 lines.append(f"Tool: {call['name']}")
-                lines.append(f"Args: {json.dumps(call['args'], indent=2)}")
+                lines.append(f"Args: {json.dumps(call['args'])}")
             lines.append("For follow-up queries, reuse these same parameters. Only change what the user explicitly asks about.")
             lines.append("--------------------------------------------------")
         if summary:
@@ -243,7 +242,7 @@ def build_system_prompt(
             if capped_extra:
                 lines.append("")
                 lines.append("--- PREVIOUS TOOL CALLS (from earlier in conversation) ---")
-                lines.append(json.dumps(capped_extra, indent=2))
+                lines.append(json.dumps(capped_extra))
                 lines.append("For follow-up queries, reuse these same parameters. Only change what the user explicitly asks about.")
                 lines.append("--------------------------------------------------")
     if query_parts and len(query_parts) > 1:

@@ -37,6 +37,36 @@ def classify_domains(query: str, resolved_entities: list | None = None) -> tuple
     return hard, soft
 
 
+_COUNT_LEMMAS = {"total", "count", "sum", "aggregate", "how", "many", "much",
+                 "kitne", "kitna", "kittna", "kittne", "kul", "kittni"}
+_COUNT_AUX = {"hai", "hain", "ho", "hoga", "hogee", "hogi", "the", "thi", "thee", "tha"}
+
+def _is_count_only(part: str) -> bool:
+    words = set(re.sub(r'[^\w\s]', '', part.lower()).split())
+    if not words:
+        return False
+    return words <= (_COUNT_LEMMAS | _COUNT_AUX)
+
+def _merge_count_parts(parts: list[str]) -> list[str]:
+    if len(parts) <= 1:
+        return parts
+    merged = list(parts)
+    i = 0
+    while i < len(merged):
+        if _is_count_only(merged[i]) and len(merged) > 1:
+            if i > 0:
+                merged[i-1] = merged[i-1] + " " + merged[i]
+                del merged[i]
+                i -= 1
+            elif i + 1 < len(merged):
+                merged[i+1] = merged[i] + " " + merged[i+1]
+                del merged[i]
+            else:
+                i += 1
+        else:
+            i += 1
+    return merged
+
 def _filter_registry_by_domain(domains: set[str]) -> dict:
     if not domains:
         return TOOL_INTENT_REGISTRY
@@ -270,6 +300,10 @@ async def semantic_search(state: MainState) -> MainState:
             )
         if not query_parts:
             query_parts = [user_query]
+
+        # Merge standalone count/aggregation parts back into nearest substantive part
+        # Prevents "top selling products + total + how many" → 3 orphan parts
+        query_parts = _merge_count_parts(query_parts)
         print(f"Query parts for metadata matching: {query_parts}")
 
         query_type = (state.get("query_type") or "").strip()

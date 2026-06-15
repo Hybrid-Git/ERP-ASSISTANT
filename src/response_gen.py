@@ -135,20 +135,14 @@ async def response_generation_node(state: MainState):
         if entities:
             system_prompt += f"KNOWN ENTITIES:\n{json.dumps(entities[-3:], indent=2, ensure_ascii=False)}\n\n"
 
-    lang_rule = (
-        "LANGUAGE: Reply in {mode}. "
-        "Use ONLY a-z A-Z 0-9 and basic punctuation. "
-        "No Devanagari or non-Latin scripts. "
-        "Write Hindi words with English letters (e.g. 'aap', 'hai', 'nahi', 'se', 'ka'). "
+    mode_map = {"hinglish": "Hinglish (Hindi words in English letters)", "hindi": "Hinglish"}
+    lang_mode = mode_map.get(detected_language, "English")
+    system_prompt += (
+        "LANGUAGE: Reply in " + lang_mode + ". "
+        "Use ONLY a-z A-Z 0-9. No Devanagari. "
+        "Write Hindi with English letters (aap/hai/nahi). "
         "Mirror the user's words.\n"
-        "WRONG: आपके ग्राहक रोहन हैं\nCORRECT: aapke customer Rohan hai\n"
     )
-    if detected_language == "hinglish":
-        system_prompt += lang_rule.replace("{mode}", "Hinglish (Hindi words in English letters)")
-    elif detected_language == "hindi":
-        system_prompt += lang_rule.replace("{mode}", "Hinglish")
-    else:
-        system_prompt += "LANGUAGE: Reply in English.\n"
 
     system_prompt += (
         "TOOL RESULTS are the ONLY truth — never invent fields/values. "
@@ -160,7 +154,7 @@ async def response_generation_node(state: MainState):
 
     intent = state.get("query_intent", "sample")
     if intent == "count":
-        system_prompt += "COUNT: Report total from 'MORE RECORDS AVAILABLE'. Say 'aapke paas X records hain'. Do NOT report shown count as total.\n"
+        system_prompt += "COUNT: Report total from 'MORE RECORDS AVAILABLE'. Say 'aapke paas X records hain' (or 'you have X records' in English). Do NOT report shown count as total.\n"
     elif intent == "aggregate":
         system_prompt += "AGGREGATE: Use ALL records. If truncated, mention total and note values are based on shown records only.\n"
     if list_mode:
@@ -179,7 +173,7 @@ async def response_generation_node(state: MainState):
     summary_text = final_response_prompt.pop("summary", "") or ""
     final_response_prompt.pop("tools_used", None)
     summary_text = re.sub(r'^[^:]+:\s*', '', summary_text)
-    summary_text = re.sub(r'; [^:]+:\s*', '; ', summary_text)
+    summary_text = re.sub(r';\s*[^:]+:\s*', '; ', summary_text)
     data = final_response_prompt.get("data", {})
 
     doc_type = (state.get("document_type", "") or "").lower()
@@ -235,17 +229,22 @@ async def response_generation_node(state: MainState):
         truncation_info = {}
     TOOL_KEY_MAP = {
         "get_customer": "customers",
-        "get_sales_invoice": "sales_invoices",
-        "get_purchase_invoice": "purchase_invoices",
+        "get_customer_ledger": "customer_ledger",
         "get_stock_levels": "stock_levels",
         "get_gst_summary": "gst_summary",
+        "get_tds_outstanding": "tds_outstanding",
+        "get_tcs_outstanding": "tcs_outstanding",
+        "get_top_products": "top_products",
+        "get_popular_products": "popular_products",
+        "get_slow_moving_products": "slow_moving_products",
         "get_sales_summary": "sales_summary",
-        "get_purchase_summary": "purchase_summary",
         "get_sales_trend": "sales_trend",
-        "get_trial_balance": "trial_balance",
         "get_top_customer": "top_customers",
-        "get_item_details": "items",
-        "search_ledger": "ledger_matches",
+        "get_top_vendor": "top_vendors",
+        "get_purchase_summary": "purchase_summary",
+        "get_search_ledgers": "ledger_matches",
+        "get_search_vendors": "vendor_matches",
+        "get_outstanding_sales_invoices": "outstanding_sales_invoices",
         "get_outstanding_purchase_invoices": "outstanding_purchase_invoices",
         "get_overdue_invoices": "overdue_invoices",
     }
