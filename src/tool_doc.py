@@ -19,7 +19,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "customer",
         "multi_call_ok": True,
         "description": "Search customers or parties and return id, name, opening balance and opening type.",
-        "prompt_tips": "Customer name or ID (e.g. 'customer 76'): use search=customer_id_number. City/location: use search=city_name. Brand+city: search=brand_name.",
+        "prompt_tips": "search=name/ID. search='' for all.",
         "aliases": [
             "customer", "customers", "party", "parties", "client", "buyer", "grahak",
             "customer_report",
@@ -87,7 +87,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "gst_report",
         "multi_call_ok": True,
         "description": "Fetch GST summary/report by date range. B2B / B2C Small / B2C Large / Exports / Nil-Rated / Exempt are GST categories. Use this tool (NOT get_sales_summary) when the user asks about B2B, B2C (Small/Large), exports, nil-rated, exempt, credit-notes, or grand-total data.",
-        "prompt_tips": "Categories: B2B, B2C Large, B2C Small, exports, Nill-Rated, credit notes. Returns all categories in one call — no filtering needed.",
+        "prompt_tips": "Returns all categories. No filter needed.",
         "aliases": ["gst", "gstr", "gst summary", "gst report", "gstsummary", "b2csmall", "b2clarge", "b2c", "b2b"],
         "keywords": [
             "b2b", "b2c", "b2c invoices", "b2c count", "b2b invoices", "b2b count",
@@ -147,7 +147,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "analytics",
         "multi_call_ok": True,
         "description": "Fetch top/best-selling products by revenue, quantity, profit, or other metrics for a date range.",
-        "prompt_tips": "sort_by=revenue|quantity|profit, dates YYYY-MM-DD, limit=N. Default sort_by=revenue, limit=10.",
+        "prompt_tips": "sort_by=revenue/quantity/profit, dates YYYY-MM-DD, limit=N.",
         "aliases": [
             "top products", "top product", "best selling", "bestseller",
             "top selling", "top items",
@@ -164,7 +164,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "analytics",
         "multi_call_ok": True,
         "description": "Fetch popular/trending products for a given time period (this_month, last_month, etc.).",
-        "prompt_tips": "period=this_month|last_month|this_quarter|last_quarter|this_year|last_year, limit=N.",
+        "prompt_tips": "period=month/quarter/year, limit=N.",
         "aliases": [
             "popular products", "popular product", "trending", "trending products",
             "whats popular", "what's popular", "in demand", "trending items",
@@ -180,7 +180,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "analytics",
         "multi_call_ok": True,
         "description": "Fetch slow-moving products with low turnover for a given time period (current_fy, current_month, etc.).",
-        "prompt_tips": "period=current_fy|current_month|last_month|last_fy, limit=N.",
+        "prompt_tips": "period=fy/month, limit=N.",
         "aliases": [
             "slow moving products", "slow moving", "slow selling", "dead stock",
             "non moving", "low turnover", "not selling", "inventory slow",
@@ -215,7 +215,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "analytics",
         "multi_call_ok": True,
         "description": "Fetch sales trend report comparing current period sales with a previous period (e.g. this_month vs last_year).",
-        "prompt_tips": "period=this_month|last_month|this_quarter|last_quarter|this_year|last_year, compare_with=last_year|last_month|last_quarter.",
+        "prompt_tips": "period=month/quarter/year. compare=last_year/month/quarter.",
         "aliases": [
             "sales trend", "sales trends", "growth comparison", "sales comparison",
             "month over month", "year over year", "trend analysis",
@@ -235,7 +235,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "customer",
         "multi_call_ok": True,
         "description": "Fetch top customers by revenue, order count, or other metrics. IMPORTANT: Returns only revenue-ranked aggregate data (not full customer details). Do NOT use this to search for a specific customer by name or city — use get_customer instead.",
-        "prompt_tips": "period=current_fy|current_month|last_month|last_fy, sort_by=revenue|orderCount, limit=N. Use get_customer for customer name/city searches.",
+        "prompt_tips": "period=fy/month, sort_by=revenue/orders, limit=N.",
         "aliases": [
             "top customer", "top customers", "best customer", "best customers",
             "top buyer", "top buyers", "top client", "top clients",
@@ -253,7 +253,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "vendor",
         "multi_call_ok": True,
         "description": "Fetch top vendors by purchase amount or bill count for a given period.",
-        "prompt_tips": "period=current_fy|current_month|last_month|last_fy, limit=N.",
+        "prompt_tips": "period=fy/month, limit=N.",
         "aliases": [
             "top vendor", "top vendors", "best vendor", "best vendors",
             "top supplier", "top suppliers",
@@ -289,7 +289,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "ledger",
         "multi_call_ok": True,
         "description": "Search ledgers (party, expense, income, asset) by name + optional groupType. Has `city` field in response for location-based lookups.",
-        "prompt_tips": "searchTerm is free-text for ledger name. group_type=expense|income|liability|asset|party.",
+        "prompt_tips": "searchTerm=name. group_type=expense/income/liability/asset/party.",
         "aliases": [
             "search ledger", "search ledgers", "find ledger", "find ledgers",
             "ledger search", "ledger group", "ledger groups",
@@ -336,7 +336,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "sales",
         "multi_call_ok": True,
         "description": "Fetch outstanding/unpaid sales invoices with aging details, invoice amounts, due dates, and summary totals.",
-        "prompt_tips": "Lists invoices by DATE RANGE. ledgerName field contains customer names (e.g. 'B2C_MAHARASHTRA', 'B2C_ANDHRA PRADESH'). When invoice_no is given, scan results for matching invoiceNo — the invoice may be anywhere in the list.",
+        "prompt_tips": "Lists by date range. Use invoice_no filter for specific invoice.",
         "aliases": [
             "outstanding sales", "outstanding invoices", "pending invoices",
             "unpaid invoices", "sales due", "invoice outstanding",
@@ -361,7 +361,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "purchase",
         "multi_call_ok": True,
         "description": "Fetch outstanding/unpaid purchase invoices with aging details, bill amounts, due dates, and summary totals.",
-        "prompt_tips": "Lists bills by DATE RANGE. When invoice_no is given, scan results for matching invoiceNo — the bill may be anywhere in the list.",
+        "prompt_tips": "Lists by date range. Use invoice_no filter for specific bill.",
         "aliases": [
             "outstanding purchases", "outstanding purchase invoices", "pending purchase invoices",
             "unpaid purchase invoices", "bills payable", "creditors",
@@ -384,7 +384,7 @@ TOOL_INTENT_REGISTRY = {
         "category": "sales",
         "multi_call_ok": True,
         "description": "Fetch overdue invoices (both sales receivables and purchase payables) past their due date, with aging details and summary totals.",
-        "prompt_tips": "invoice_type=SALES|PURCHASE|BOTH, as_of_date YYYY-MM-DD. When invoice_no is given, scan results for matching invoiceNo — the invoice may be anywhere in the list.",
+        "prompt_tips": "invoice_type=SALES/PURCHASE/BOTH. as_of_date YYYY-MM-DD.",
         "aliases": [
             "overdue invoices", "overdue bills", "overdue payments",
             "past due", "past due invoices", "delayed payments",

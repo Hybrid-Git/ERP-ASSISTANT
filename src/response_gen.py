@@ -78,6 +78,7 @@ def _strip_hallucinated_values(text: str, tool_data: dict, original_query: str =
 
 @traceable(name="response_generation_node", run_type="chain")
 async def response_generation_node(state: MainState):
+    print("→ response_gen")
     memory_answer = state.get("memory_answer", "")
     final_response = state.get("final_response", {})
     if memory_answer:
@@ -123,12 +124,9 @@ async def response_generation_node(state: MainState):
 
     system_prompt = (
         "You are an ERP assistant. Reply using ONLY the tool results below.\n"
-        "Vary your tone and sentence structure — don't sound the same every time. "
-        "Mirror the user's language (Hinglish if they used it, English if they did). "
-        "Never say 'As an AI'. Never invent fields or values. "
-        "No JSON/code. No headings like 'Summary:' or 'Details:'. "
-        "If tool results are empty, say it plainly ('data nahi mila' / 'kuch nahi mila'). "
-        "Answer only what was asked. Be conversational, not templated.\n"
+        "Vary your tone. Mirror the user's language. "
+        "Never say 'As an AI'. No JSON/code/headings. "
+        "If empty → 'data nahi mila'. Be conversational.\n"
     )
     if previous_summary:
         system_prompt += f"Background conversation:\n{previous_summary}\n\n"
@@ -153,36 +151,27 @@ async def response_generation_node(state: MainState):
         system_prompt += "LANGUAGE: Reply in English.\n"
 
     system_prompt += (
-        "Never invent fields/values — TOOL RESULTS are the ONLY truth. "
-        "If data is empty, say 'data nahi mila' / 'kuch nahi mila'. "
-        "Report ALL matching records, never omit duplicates. "
-        "For multi-part queries, answer each part. "
-        "For detail requests: include EVERY field from the record. "
-        "For truncation: say the total count and ask if they want more. "
-        "Only show data from TOOL RESULTS — no summaries/aggregates of hidden records. "
-        "End with a natural follow-up unless query was a yes/no/command.\n"
+        "TOOL RESULTS are the ONLY truth — never invent fields/values. "
+        "Report ALL records. Multi-part → answer each. "
+        "Truncated → say total count, ask if they want more. "
+        "Never use the word 'sample'. "
+        "End with a natural follow-up unless yes/no/command.\n"
     )
 
     intent = state.get("query_intent", "sample")
     if intent == "count":
-        system_prompt += (
-            "CRITICAL — This is a COUNT query. Report the TOTAL count from the 'MORE RECORDS AVAILABLE' note. "
-            "Say 'aapke paas X records hain'. Do NOT say the truncated/shown count is the total.\n"
-        )
+        system_prompt += "COUNT: Report total from 'MORE RECORDS AVAILABLE'. Say 'aapke paas X records hain'. Do NOT report shown count as total.\n"
     elif intent == "aggregate":
-        system_prompt += (
-            "CRITICAL — This is an AGGREGATE query. Use ALL available records to compute totals. "
-            "If data is truncated, mention the total count and that values are based on shown records only.\n"
-        )
+        system_prompt += "AGGREGATE: Use ALL records. If truncated, mention total and note values are based on shown records only.\n"
     if list_mode:
         system_prompt += (
-            "LIST MODE: Format each record as '- ' bullet. "
-            "STRICT: headings or numbered lists instead of '- ' bullets → response DISCARDED. "
-            "Show 1-2 fields per record. Mention total count, ask if they want more.\n"
-            "Example:\n"
-            "  - Masjid To Churchgate\n"
-            "  - Vasai-Dahisar\n\n"
-            "  Ye 100 records mein se 10 hain. Aur dikhaun?\n"
+            "LIST MODE - STRICT:\n"
+            "First line MUST say 'showing X of Y total records' "
+            "(X=records shown below, Y=total from MORE RECORDS AVAILABLE).\n"
+            "Then each record as '- ' bullet, 1-2 fields.\n"
+            "Never use the word 'sample'. Never use headings.\n"
+            "No numbered lists (only '- ' bullets).\n"
+            "End by asking if they want to see more.\n"
         )
 
     final_response_prompt = dict(final_response)
@@ -233,10 +222,7 @@ async def response_generation_node(state: MainState):
         canonical, re.IGNORECASE
     ))
 
-    MAX_SAMPLE = 5 if has_range_filter else (20 if detail_mode else (10 if list_mode else 5))
-    for tool_name, records in data.items():
-        if isinstance(records, list) and len(records) > MAX_SAMPLE:
-            data[tool_name] = records[:MAX_SAMPLE]
+    # truncation already done in deterministic_final.py per intent
 
     # Sync truncation_info shown count with actual data after further truncation
     if truncation_info:
@@ -247,13 +233,6 @@ async def response_generation_node(state: MainState):
     if has_range_filter:
         final_response_prompt.pop("total_rows", None)
         truncation_info = {}
-    truncation_note = ""
-    if truncation_info:
-        total = sum(v.get("total", 0) for v in truncation_info.values())
-        shown = sum(v.get("shown", 0) for v in truncation_info.values())
-        remaining = total - shown
-        truncation_note = f"\nMORE RECORDS AVAILABLE: {shown} shown out of {total}. {remaining} more available. Ask conversationally if user wants more.\n"
-
     TOOL_KEY_MAP = {
         "get_customer": "customers",
         "get_sales_invoice": "sales_invoices",
@@ -270,6 +249,17 @@ async def response_generation_node(state: MainState):
         "get_outstanding_purchase_invoices": "outstanding_purchase_invoices",
         "get_overdue_invoices": "overdue_invoices",
     }
+    truncation_note = ""
+    if truncation_info:
+        notes = []
+        for tn, info in truncation_info.items():
+            nice_name = TOOL_KEY_MAP.get(tn, tn.replace("get_", "", 1))
+            notes.append(
+                f"{nice_name}: {info['shown']} total"
+                if info['shown'] >= info['total']
+                else f"{nice_name}: {info['shown']} out of {info['total']} shown"
+            )
+        truncation_note = f"\nMORE RECORDS AVAILABLE: {'; '.join(notes)}. Ask if user wants more.\n"
     tool_data = final_response_prompt.get("data", {})
     if isinstance(tool_data, dict):
         renamed = {}

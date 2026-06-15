@@ -1,10 +1,15 @@
 import re
-
+# Q: kitne products hai inventory mai
+# A: {"canonical_query":"How many products in inventory","document_type":"product","language":"hinglish","confidence":"high","query_type":"erp_query"}
+# Q: kyu nahi mila
+# A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high","query_type":"erp_query"}
+# Q: hamne sabse pehle kya pucha tha
+# A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}
 TRANSLATOR_PROMPT_BASE = """Normalize Hinglish/Hindi/Gujarati → clean English JSON.
 
 SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low","query_type":"erp_query|conversational|ood|mixed","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
 
-WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, rakam=amount, baki=outstanding, kam=less, zyada=greater, dikhao/batao=show, aur=and, kitne/kitna=how_many/much, hai/ho=is_are, kya=what, konse/konsa/jiska=which, kyu=why, chaia/chahiye=need, nahi=not, hamare/mera/uska/uski=our/my/his, wala/wale=with, sari/saari=all
+WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, baki=outstanding, zyada=greater, dikhao/batao=show, aur=and, kitne/kitna=how_many, kya=what, kyu=why, chaia/chahiye=need, nahi=not, wala/wale=with, sari/saari=all
 
 RULES:
 - query_type: "ood" if asking about non-ERP topics (movies, sports, recipes, general knowledge, news, weather, etc.), "conversational" if asking about conversation history (what we discussed, what was asked, recap, etc.), "erp_query" if asking about ERP data (customers/stock/GST/invoices), "mixed" if asking about both history AND data.
@@ -13,14 +18,6 @@ RULES:
 EXAMPLES:
 Q: A/0326/C0077 sales bill ka customer name batao
 A: {"canonical_query":"Show customer name for sales invoice A/0326/C0077","document_type":"sales_invoice","language":"hinglish","confidence":"high","query_type":"erp_query"}
-Q: kitne products hai inventory mai
-A: {"canonical_query":"How many products in inventory","document_type":"product","language":"hinglish","confidence":"high","query_type":"erp_query"}
-Q: kyu nahi mila
-A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high","query_type":"erp_query"}
-Q: hamne sabse pehle kya pucha tha
-A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}
-Q: muje avengers ke bare mai janna hai
-A: {"canonical_query":"Tell me about Avengers","document_type":"general","language":"hinglish","confidence":"high","query_type":"ood"}
 /no_think"""
 
 META_QUESTION_PATTERNS_GLOBAL = [

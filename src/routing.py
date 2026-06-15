@@ -3,7 +3,7 @@ from src.schema import MainState
 
 async def routing_node(state: MainState):
     try:
-        print("Routing node activated............")
+        print("→ routing")
         messages = state.get("messages", [])
         if not messages:
             return "__end__"

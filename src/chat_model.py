@@ -11,12 +11,44 @@ from src.tools_api import tools_dict
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 from src.config import llm, summary_llm
 from src.utils import (
-    now, sec, log_token_usage, print_ollama_metadata, sanitize_tool_filters,
+    now, sec, log_token_usage, sanitize_tool_filters,
     TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
     extract_date_range_for_tool,strip_think_tags
 )
 from src.semantic_search import classify_domains
 from src.prompts import META_QUESTION_PATTERNS_GLOBAL, _REFERENCE_PATTERN
+
+SCOPE_WORDS = {
+    "all", "every", "each",
+    "sab", "sabhi", "sare", "saare", "sari", "saari",
+    "poora", "pura", "saara", "har",
+}
+DOMAIN_WORDS_FOR_EMPTY_SEARCH = {
+    "products", "product", "items", "item", "stock", "inventory",
+    "customers", "customer", "parties", "party",
+    "vendors", "vendor", "suppliers", "supplier",
+    "maal", "samaan",
+}
+
+
+def clean_scope_search_value(value: str) -> str:
+    if not isinstance(value, str):
+        return value
+    q = value.strip().lower()
+    tokens = set(re.findall(r"[a-z0-9]+", q))
+    if tokens and tokens <= (SCOPE_WORDS | DOMAIN_WORDS_FOR_EMPTY_SEARCH):
+        return ""
+    return value
+
+
+def _strip_schema_descriptions(tool_schemas: list[dict]) -> list[dict]:
+    for schema in tool_schemas:
+        func = schema.get("function", {})
+        params = func.get("parameters", {})
+        props = params.get("properties", {})
+        for p_name, p_schema in props.items():
+            p_schema.pop("description", None)
+    return tool_schemas
 
 
 def _get_recent_tool_calls(messages: list, max_calls: int = 3) -> list[dict]:
@@ -112,22 +144,38 @@ def _build_memory_context(messages: list, max_exchanges: int = 3) -> str:
     return ""
 
 
+CATEGORY_SUMMARIES: dict[str, tuple[str, str]] = {
+    "customer": ("Customers", "Search customers/parties, view ledgers, find top buyers."),
+    "stock": ("Stock & Inventory", "Check stock levels, low stock, out-of-stock by product/SKU/HSN."),
+    "gst_report": ("GST", "View GST summary — B2B, B2C, exports, nil-rated, exempt."),
+    "tds_report": ("TDS/TCS", "Check TDS and TCS outstanding/payable reports."),
+    "analytics": ("Reports & Analytics", "Top/popular/slow-moving products, sales summary & trends."),
+}
+
+_LANG_RULE = (
+    "Speak the same language the user used (English or Hinglish). "
+    "If Hindi/Hinglish, use ONLY a-z A-Z 0-9 and basic punctuation "
+    "— no Devanagari or non-Latin characters. "
+    "Write Hindi with English letters: 'aap', 'hai', 'nahi', 'ka'."
+)
+
 def _build_capability_text() -> str:
+    seen_categories = set()
     lines = []
-    seen = set()
-    for tname, meta in TOOL_INTENT_REGISTRY.items():
-        desc = meta.get("description", "")
-        if not desc:
+    for _tname, meta in TOOL_INTENT_REGISTRY.items():
+        cat = meta.get("category")
+        if not cat or cat in seen_categories:
             continue
-        cleaned = re.sub(r"IMPORTANT:.*?(?:\.|;|$)", "", desc)
-        cleaned = re.sub(r"(Do|Use)\s+NOT.*?(?:\.|;|$)", "", cleaned)
-        cleaned = re.sub(r"(?:use|call)\s+`?\w+`?\s+(?:instead|to|first).*?(?:\.|;|$)", "", cleaned, flags=re.IGNORECASE)
-        tool_label = tname.replace("get_", "").replace("_", " ").title()
-        cleaned = f"{tool_label}: {desc}"
-        cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".,; ")
-        if cleaned and cleaned.lower() not in seen:
-            seen.add(cleaned.lower())
-            lines.append(f"- {cleaned}")
+        seen_categories.add(cat)
+        entry = CATEGORY_SUMMARIES.get(cat)
+        if entry:
+            heading, summary = entry
+            lines.append(f"- **{heading}**: {summary}")
+    extra_cats = seen_categories - set(CATEGORY_SUMMARIES.keys())
+    if extra_cats:
+        lines.append("- **And more**: Vendors, purchases, ledgers, and invoices.")
+    if not lines:
+        return "I can help with ERP data — customers, stock, GST, invoices, reports, and more."
     return "\n".join(lines)
 
 def build_system_prompt(
@@ -141,21 +189,19 @@ def build_system_prompt(
     original_query: str = "",
 ) -> str:
     lines = [
-        "You are an ERP assistant. Use the available tools to answer the user.",
-        'Preserve all query text literally. Do not reinterpret or assume intent. If user says "mars" use "mars", not March.',
+        "You are an ERP assistant. Be literal — no reinterpretation.",
         "Never invent IDs, names, dates, or amounts.",
-        "You MUST call at least one tool. Never answer in prose without a tool call.",
-        "Do NOT output any thinking or reasoning — call the tool directly.",
+        "Must call a tool. Never answer in prose. No thinking output.",
         "",
         "STRICT ANTI-HALLUCINATION RULES:",
         "- CRITICAL: Do NOT search for quantity/scope words. Never pass words like 'sara', 'sab', 'all', 'every', 'each', 'saare', 'poora', 'pure', 'sabhi', 'saari', 'sare', 'sari' as the 'search' or 'term' parameter. These describe scope ('all'/'every'), NOT entity names. If the user asks for 'all records', call the list tool without a search filter.",
         "- CRITICAL: Never invent entity identifiers. Never pass an ID, name, or search term that you made up or inferred from non-entity words. Only use IDs/names that you have actually seen in prior tool results. If you lack a real ID, call a list/search tool first and extract the ID from its results — do not guess.",
         "- CRITICAL: When the user's query has been updated to include specific entity names (e.g., resolved from pronouns like 'dono'), use ONLY those exact names as your search/term parameters. Do NOT use entity names from other previous tool results (e.g., top_customers, top_vendors) unless they match the resolved names. For example, if the resolved query says 'NYKAA... aur Nykaa Warehouse...', search for THOSE names only — NOT for B2CTELANGANA or any other name from get_top_customer.",
         "",
-        "FOLLOW-UP RULES:",
-        "- If the answer is already in previous tool results, use it directly without a new API call.",
-        "- When a tool has sort_field/sort_order parameters and the user asks for extreme/comparative values (highest, most, least, top, bottom, etc.), ALWAYS set sort_field to the field being compared and sort_order accordingly: 'desc' for highest/most/top, 'asc' for lowest/least/bottom.",
-        "- CRITICAL: When the current query requires a DIFFERENT tool than the previous one (e.g. switching from get_customer to get_stock_levels), you MUST clear ALL old search terms and parameters. Reuse parameters ONLY within the same tool.",
+        "FOLLOW-UP:",
+        "- Answer from prior results if available — no new call.",
+        "- When sort_field/sort_order available and user asks extreme values (highest, most, least, top, bottom), set sort_order: 'desc' for top, 'asc' for bottom.",
+        "- CRITICAL: Switching to a DIFFERENT tool? Clear ALL old params. Reuse only within the same tool.",
     ]
 
     check_query = f"{original_query} {user_query}" if original_query else user_query
@@ -221,12 +267,11 @@ def build_system_prompt(
             if meta and meta.get("prompt_tips"):
                 lines.append(f"  {tool_name}: {meta['prompt_tips']}")
     lines.append("")
-    lines.append("FAILURE-AWARE RESPONSE:")
-    lines.append("  If a tool call returns empty results, do NOT hallucinate data. Report clearly: 'No records found for X.'")
-    lines.append("  If the user asks about something from earlier that returned no data, acknowledge the prior failure.")
+    lines.append("FAILURE-AWARE:")
+    lines.append("  If empty → say 'No records for X'. Acknowledge prior failures if any.")
     lines.append("")
     lines.append("PARAMETER RULE:")
-    lines.append("  NEVER copy parameters between different tools. Each tool has its own unique set of valid parameters.")
+    lines.append("  NEVER copy params between different tools.")
     return "\n".join(lines)
 
 
@@ -234,7 +279,7 @@ def build_system_prompt(
 async def chat_model_node(state: MainState):
     node_start = now()
     try:
-        print("\n========== CHAT MODEL NODE START ==========")
+        print("→ chat_model")
         step = now()
         original_query = state.get("original_query") or state.get("user_query", "")
         user_query = state.get("canonical_query") or state.get("user_query", "")
@@ -246,11 +291,6 @@ async def chat_model_node(state: MainState):
             msg for msg in state.get("messages", [])
             if not isinstance(msg, SystemMessage)
         ]
-        print(f"[1] Read state: {sec(step)}s")
-        print("user_query:", user_query)
-        print("selected_tools:", selected_tools)
-        print("query_parts:", query_parts)
-        print("loop_count:", loop_count)
 
         step = now()
         available_tools = [
@@ -258,27 +298,14 @@ async def chat_model_node(state: MainState):
             for name in selected_tools
             if name in tools_dict
         ]
-        print(f"[2] Loaded available tools: {sec(step)}s")
-        print("available_tool_names:", [tool.name for tool in available_tools])
-
         if not available_tools:
             query_type = (state.get("query_type") or "").strip()
             if query_type == "greeting":
                 greeting_prompt = (
                     "You are an ERP assistant. The user just greeted you.\n"
-                    "Respond warmly and naturally like a friendly human. "
-                    "Vary your greeting each time — don't repeat the same words. "
-                    "You can say hi hello namaste, welcome them, and briefly offer help. "
-                    "Keep it to 1-2 short sentences. Be warm, not robotic.\n"
-                    "Do NOT mention tools, APIs, or technical details. "
-                    "Speak in the same language the user used (English or Hinglish).\n"
-                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
-                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
-                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
-                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-                     "CRITICAL: Always end your reply with a natural invitation like "
-                    "'What can I help you with?' or 'Kya dekhna chahenge aap?' "
-                    "or 'Batao, kya chahiye?'\n"
+                    "Respond warmly in 1-2 sentences. Vary your greeting each time. "
+                    f"{_LANG_RULE}\n"
+                    "End with: 'Kya dekhna chahenge aap?' or 'What can I help with?'\n"
                     "/no_think"
                 )
                 try:
@@ -299,19 +326,10 @@ async def chat_model_node(state: MainState):
             if query_type == "capability":
                 caps_text = _build_capability_text()
                 cap_prompt = (
-                    "You are an ERP assistant. The user asked about what you can do.\n"
-                    "Here is a list of everything I can help with — present it to the user in a friendly, readable way.\n"
-                    "Group related items under simple headings (Customers, Stock, GST, Invoices, TDS/TCS, Reports, etc).\n"
+                    "The user asked what you can do. Present these capabilities naturally:\n"
                     f"{caps_text}\n\n"
-                    "Format it with short headings and 1-line descriptions per item. "
-                    "Keep it clean and conversational — no tool names or tech jargon. "
-                    "End with a natural question asking which one they'd like help with, like "
-                     "'Kaunsa dekhna hai?' or 'Which one would you like me to look up?'\n"
-                     "Speak in the same language as the user (English or Hinglish).\n"
-                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
-                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
-                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
-                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
+                    f"{_LANG_RULE}\n"
+                    "End with: 'Kaunsa dekhna hai?' or 'Which one would you like to look up?'\n"
                     "/no_think"
                 )
                 try:
@@ -332,23 +350,11 @@ async def chat_model_node(state: MainState):
             if query_type == "ambiguous":
                 caps_text = _build_capability_text()
                 ambig_prompt = (
-                    "You are an ERP assistant. The user asked for something but didn't specify what exactly.\n"
-                    "Don't refuse — instead describe what you CAN help with, and ask them to specify.\n"
-                    "Here are your capabilities — describe them naturally, NEVER mention tool names, API calls, or technical details:\n"
+                    "The user was unclear. Describe what you CAN help with "
+                    "in 2-3 friendly sentences with specific examples:\n"
                     f"{caps_text}\n\n"
-                    "Write 3-5 friendly, conversational sentences covering the main areas. "
-                    "Give specific examples of what you can do. "
-                    # "Say something like: 'I can help with a lot of things! You can ask me about customers "
-                    # "— I can search by name or city and get their details. I can check stock levels "
-                    # "for any product or HSN code. I can show GST reports, outstanding invoices, "
-                    #  "sales summaries, and much more. What exactly would you like to look up?'\n"
-                     "Speak in the same language as the user (English or Hinglish).\n"
-                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
-                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
-                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
-                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-                     "Do NOT mention tool names, APIs, or technical details.\n"
-                     "CRITICAL: Always end with a natural question asking what they want to look up.\n"
+                    f"{_LANG_RULE}\n"
+                    "End by asking what they want to look up.\n"
                     "/no_think"
                 )
                 try:
@@ -370,21 +376,11 @@ async def chat_model_node(state: MainState):
             if query_type == "ood":
                 caps_text = _build_capability_text()
                 ood_prompt = (
-                    "You are an ERP assistant. The user asked something outside my domain.\n"
-                    "Do NOT answer their question. I do NOT have that information.\n"
-                    "Here is a list of everything I CAN help with — present it to the user in a friendly, readable way.\n"
-                    "Group related items under simple headings (Customers, Stock, GST, Invoices, TDS/TCS, Reports, etc).\n"
+                    "The user asked something outside my domain — do NOT answer it.\n"
+                    "Instead, present what I CAN help with:\n"
                     f"{caps_text}\n\n"
-                    "Format it with short headings and 1-line descriptions per item. "
-                    "Keep it clean and conversational — no tool names or tech jargon. "
-                    "End with a natural question asking which one they'd like help with, like "
-                     "'Kaunsa dekhna hai?' or 'Which one would you like me to look up?'\n"
-                     "Speak in the same language as the user (English or Hinglish).\n"
-                     "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
-                     "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
-                     "Do NOT use Devanagari (Hindi script), Chinese, or any other non-Latin characters. "
-                     "Write Hindi words with English letters: 'aap', 'hai', 'nahi', 'se', 'ka'.\n"
-                    "CRITICAL: Do NOT answer the question. Always end by asking what they want to look up.\n"
+                    f"{_LANG_RULE}\n"
+                    "End by asking what they'd like to look up.\n"
                     "/no_think"
                 )
                 try:
@@ -404,16 +400,10 @@ async def chat_model_node(state: MainState):
 
             if query_type == "conversational":
                 conv_prompt = (
-                    "You are a friendly ERP assistant having a casual chat with the user.\n"
-                    "Respond naturally, warmly, and conversationally. 1-2 short sentences.\n"
-                    "Vary your responses each time — don't repeat the same phrases.\n"
-                    "Do NOT mention tools, APIs, or technical details.\n"
-                    "If they greet you, greet back. If they ask how you are, respond warmly.\n"
-                    "Keep it light and human-like. End with a natural invitation to help.\n"
-                    "Speak in the same language the user used (English or Hinglish).\n"
-                    "LANGUAGE RULE: If the user wrote in Hindi or Hinglish, "
-                    "your ENTIRE reply MUST use ONLY a-z A-Z 0-9 and basic punctuation. "
-                    "Do NOT use Devanagari (Hindi script) or any non-Latin characters.\n"
+                    "You are a friendly ERP assistant having a casual chat. "
+                    "Respond naturally in 1-2 sentences. Vary your responses. "
+                    f"{_LANG_RULE}\n"
+                    "End with a natural invitation to help.\n"
                     "/no_think"
                 )
                 resp = await summary_llm.ainvoke([
@@ -486,7 +476,6 @@ async def chat_model_node(state: MainState):
             }
 
         step = now()
-        print("[3] Using bind_tools")
         prompt_start = time.perf_counter()
         system_prompt_text = build_system_prompt(
             user_query=user_query,
@@ -530,9 +519,7 @@ async def chat_model_node(state: MainState):
             + chat_history
             + [HumanMessage(content=user_query)]
         )
-        print(f"[5] Built LLM input messages: {sec(prompt_start)}s")
-        print("message_count:", len(llm_input))
-        print("message_types:", [type(m).__name__ for m in llm_input])
+
 
         all_raw_calls = []
         called_names = set()
@@ -557,7 +544,9 @@ async def chat_model_node(state: MainState):
 
             # Debug: log the tool schemas being sent
             try:
-                tool_schemas = [convert_to_openai_tool(t, strict=False) for t in remaining_tools]
+                tool_schemas = _strip_schema_descriptions(
+                    [convert_to_openai_tool(t, strict=False) for t in remaining_tools]
+                )
                 print(f"[BIND_TOOLS] model={llm.model}, tool_count={len(tool_schemas)}")
                 print(f"[BIND_TOOLS] schemas={json.dumps(tool_schemas, indent=2)[:3000]}")
             except Exception as schema_e:
@@ -568,34 +557,10 @@ async def chat_model_node(state: MainState):
             except Exception as e:
                 print(f"[RETRY ERROR] {e} — preserving round {retry_count - 1} results")
                 print(f"[RETRY ERROR TRACEBACK] {traceback.format_exc()}")
-                # Probe 1: try WITHOUT tool binding to distinguish server vs tool issue
-                print("[PROBE] Sending same messages WITHOUT bind_tools...")
-                try:
-                    probe = await llm.ainvoke(loop_input)
-                    print(f"[PROBE] Plain call succeeded: type={type(probe).__name__}, "
-                          f"content={repr(str(getattr(probe, 'content', ''))[:200])}, "
-                          f"tool_calls={getattr(probe, 'tool_calls', None)}")
-                except Exception as probe_e:
-                    print(f"[PROBE] Plain call ALSO failed: {probe_e}")
-                # Probe 2: minimal health check
-                print("[PROBE2] Minimal 'Say OK' health check...")
-                try:
-                    probe2 = await llm.ainvoke([SystemMessage(content="Say OK")])
-                    print(f"[PROBE2] Works: {repr(probe2.content)[:100]}")
-                except Exception as probe2_e:
-                    print(f"[PROBE2] FAILED: {probe2_e}")
+
                 break
             print(f"[6] LLM invoke completed: {sec(step)}s")
             log_token_usage(response, "chat_model")
-
-            print("\n========== RAW WORKER RESPONSE DEBUG ==========")
-            print("response_type:", type(response).__name__)
-            print("content:", repr(getattr(response, "content", "")))
-            print("tool_calls:", getattr(response, "tool_calls", None))
-            print("additional_kwargs:", getattr(response, "additional_kwargs", {}))
-            print("response_metadata:", getattr(response, "response_metadata", {}))
-            print("==============================================\n")
-            print_ollama_metadata(response)
 
             raw_tool_calls = getattr(response, "tool_calls", None) or []
             for call in raw_tool_calls:
@@ -635,10 +600,9 @@ async def chat_model_node(state: MainState):
             print(f"[RETRY] Missing tool calls for: {remaining_names}")
             loop_input = (
                 [llm_input[0]]
-                + llm_input[1:-1]
                 + [HumanMessage(content=user_query)]
                 + [response]
-                + [HumanMessage(content=f"You still need to call the following tool(s): {', '.join(remaining_names)}. Call them now.Do NOT call tools you have already called.")]
+                + [HumanMessage(content=f"Call remaining tools: {', '.join(remaining_names)}. Do NOT repeat already-called tools.")]
             )
 
         if not all_raw_calls:
@@ -896,7 +860,7 @@ async def chat_model_node(state: MainState):
                     "list_all": 10000,
                     "comparison": 1000,
                     "detail": 200,
-                    "sample": 50,
+                    "sample": 100,
                     "extreme": 1,
                 }
                 target = intent_limits.get(intent, 50)
@@ -972,7 +936,10 @@ async def chat_model_node(state: MainState):
                 rargs = result["args"]
                 for nk in ("search", "search_term", "term"):
                     if nk in rargs and isinstance(rargs[nk], str):
-                        rargs[nk] = rargs[nk].strip()
+                        old = rargs[nk]
+                        rargs[nk] = clean_scope_search_value(rargs[nk])
+                        if old != rargs[nk]:
+                            print(f"[ARG CLEANUP] {name}.{nk}: {old!r} -> {rargs[nk]!r}")
                 filters_dict = rargs.get("filters")
                 if isinstance(filters_dict, dict):
                     for fk, fv in filters_dict.items():
@@ -1006,7 +973,6 @@ async def chat_model_node(state: MainState):
                 if new_filled > existing_filled:
                     deduped[key] = call
         if len(deduped) < len(tool_calls):
-            print(f"[DEDUP] tool_calls: {len(tool_calls)} -> {len(deduped)}")
             tool_calls = list(deduped.values())
 
         sanitized = [call for call in tool_calls if sanitize_tool_filters(call["name"], call["args"]) is not None]
@@ -1044,21 +1010,7 @@ async def chat_model_node(state: MainState):
                 response_metadata=response.response_metadata,
                 id=response.id,
             )
-            print(f"[FIX] Extracted {len(tool_calls)} tool call(s) from bind_tools")
 
-        print("\n========== WORKER LLM RESPONSE ==========")
-        print("response_type:", type(response).__name__ if 'response' in dir() else 'N/A')
-        print("tool_call_count:", len(tool_calls))
-        print("tool_calls:", tool_calls)
-        print("========================================\n")
-        for i, call in enumerate(tool_calls, start=1):
-            print(f"\n--- Tool Call {i} ---")
-            print("name:", call.get("name"))
-            print("args:")
-            print(json.dumps(call.get("args", {}), indent=2, ensure_ascii=False))
-
-        print(f"[TOTAL chat_model_node]: {sec(node_start)}s")
-        print("========== CHAT MODEL NODE END ==========\n")
 
         memory_answer = ""
         if needs_date_clarification and tool_calls:

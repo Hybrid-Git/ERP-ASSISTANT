@@ -54,7 +54,7 @@ def _classify_intent(*queries: str) -> str:
         return "aggregate"
     if re.search(r'\b(?:kitne|kitna|kittna|kittne|how many|total count|kul kitne|kul kitna|count)\b', combined):
         return "count"
-    if re.search(r'\b(?:sab|saare|sare|saari|poora|puri|all |every |each |complete list|full list)\b', combined):
+    if re.search(r'\b(?:sab|saare|sare|saari|poora|puri|all |every |each |complete list|full list|list)\b', combined):
         return "list_all"
     if re.search(r'\b(?:antar|difference|compar|vs |versus|donon|dono)\b', combined):
         return "comparison"
@@ -183,6 +183,13 @@ def _keyword_whitelist_filter(part: str, tools: list[str]) -> list[str]:
     return tools
 
 
+def _looks_tokenized_query_parts(parts: list[str]) -> bool:
+    if not parts or len(parts) <= 2:
+        return False
+    single_word_count = sum(1 for p in parts if len(str(p).split()) == 1)
+    return single_word_count / len(parts) >= 0.7
+
+
 def _matches_ood_topic(query: str) -> bool:
     q = query.lower().strip()
     if not q:
@@ -238,7 +245,7 @@ def _has_domain_content(parts: list[str]) -> bool:
 @traceable(name="semantic_search_node", run_type="retriever")
 async def semantic_search(state: MainState) -> MainState:
     try:
-        print("Semantic search node triggered")
+        print("→ semantic_search")
         original_query = state.get("original_query") or state.get("user_query", "") or ""
         canonical_query = state.get("canonical_query", "") or ""
         document_type = (state.get("document_type", "") or "").lower().strip()
@@ -253,10 +260,8 @@ async def semantic_search(state: MainState) -> MainState:
 
         pre_resolved = state.get("query_parts") or []
         has_entities = bool(state.get("resolved_entities"))
-        translator_used = state.get("translator_used", False)
-        use_pre_resolved = translator_used or has_entities or len(pre_resolved) > 1
 
-        if use_pre_resolved and pre_resolved:
+        if pre_resolved and not _looks_tokenized_query_parts(pre_resolved):
             query_parts = pre_resolved
         else:
             query_parts = split_query_for_tools(
@@ -398,6 +403,21 @@ async def semantic_search(state: MainState) -> MainState:
                 maybe_append = ["get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"]
 
         if maybe_append:
+            _DOC_TYPE_ALLOWED = {
+                "product": {"get_stock_levels"},
+                "customer": {"get_customer", "get_customer_ledger", "get_top_customer"},
+                "sales_invoice": {"get_outstanding_sales_invoices", "get_overdue_invoices", "get_sales_summary"},
+                "purchase_invoice": {"get_outstanding_purchase_invoices", "get_overdue_invoices", "get_purchase_summary"},
+                "gst": {"get_gst_summary"},
+            }
+            allowed = _DOC_TYPE_ALLOWED.get(document_type)
+            if allowed:
+                before = maybe_append[:]
+                maybe_append = [t for t in maybe_append if t in allowed]
+                if before != maybe_append:
+                    print(f"[DOC_TYPE FILTER] {document_type}: {before} -> {maybe_append}")
+            if not maybe_append:
+                maybe_append = []
             combined_filter_domains = combined_hard_domains | combined_soft_domains
             if combined_filter_domains:
                 filtered = [t for t in maybe_append if set(TOOL_DOMAINS.get(t, [])) & combined_filter_domains]

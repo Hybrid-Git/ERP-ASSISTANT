@@ -9,7 +9,7 @@ load_dotenv()
 limit = int(os.getenv("summary_limit"))
 @traceable(name="summarization_node", run_type="chain")
 async def summarization_node(state: MainState):
-    print("Summarization node activated............")
+    print("→ summarization")
     messages = state.get("messages", [])
     current_summary = state.get("summary", "")
     try:

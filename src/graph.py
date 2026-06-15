@@ -60,7 +60,6 @@ def timed_node(node_name: str, node_func):
 
 def graph_builder():
     try:
-        print("Building graph...")
 
         builder = StateGraph(
             MainState,

@@ -66,7 +66,7 @@ def make_summary(data: dict, errors: list, unsupported_parts: list | None = None
             if isinstance(record, dict):
                 formatted = _format_record_fields(record)
                 if formatted:
-                    summary += " (sample: " + formatted + ")"
+                    summary += " (e.g., " + formatted + ")"
             parts.append(summary)
     if total_rows > 0:
         parts.append(f"total_rows: {total_rows}")
@@ -257,6 +257,7 @@ def apply_identifier_filter(data: dict, identifiers: dict) -> dict:
 
 @traceable(name="deterministic_final_node", run_type="chain")
 async def deterministic_final_node(state: MainState):
+    print("→ deterministic_final")
     user_query = state.get("user_query", "")
     canonical_query = state.get("canonical_query", "")
     messages = state.get("messages", [])
@@ -447,7 +448,7 @@ async def deterministic_final_node(state: MainState):
     wants_all = any(kw in combined_q for kw in show_all_keywords)
 
     intent = state.get("query_intent", "sample")
-    intent_max = {"count": 500, "aggregate": 500, "list_all": 500, "comparison": 200, "detail": 200, "sample": 10, "extreme": 1}
+    intent_max = {"count": 500, "aggregate": 500, "list_all": 500, "comparison": 200, "detail": 200, "sample": 100, "extreme": 1}
     MAX_RECORDS = intent_max.get(intent, 10)
     if wants_all and MAX_RECORDS < 200:
         MAX_RECORDS = 200
@@ -456,9 +457,18 @@ async def deterministic_final_node(state: MainState):
         if isinstance(records, list):
             actual_count = len(records)
             total = total_rows_per_tool.get(tool_name, actual_count)
+            truncation_info[tool_name] = {"total": total, "shown": min(actual_count, MAX_RECORDS)}
             if total > MAX_RECORDS:
-                truncation_info[tool_name] = {"total": total, "shown": min(actual_count, MAX_RECORDS)}
                 data[tool_name] = records[:MAX_RECORDS]
+
+    # Strip null/empty values to reduce response gen tokens
+    for tool_name, records in data.items():
+        if isinstance(records, list):
+            data[tool_name] = [
+                {k: v for k, v in r.items() if v not in (None, "", [])}
+                if isinstance(r, dict) else r
+                for r in records
+            ]
 
     if invoice_matches:
         for tn, match in invoice_matches.items():

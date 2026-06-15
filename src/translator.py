@@ -8,6 +8,16 @@ from src.utils import log_token_usage, extract_json_object, NON_ENGLISH_HINTS, M
 from src.prompts import TRANSLATOR_PROMPT_BASE, META_QUESTION_PATTERNS_GLOBAL, HINGLISH_PRONOUNS, DONO_PRONOUNS, INVOICE_DOC_MAP
 from src.semantic_search import classify_domains
 
+_translation_cache: dict[str, dict] = {}
+_TRANSLATION_CACHE_MAX = 128
+
+
+def _looks_tokenized_query_parts(parts: list[str]) -> bool:
+    if not parts or len(parts) <= 2:
+        return False
+    single_word_count = sum(1 for p in parts if len(str(p).split()) == 1)
+    return single_word_count / len(parts) >= 0.7
+
 
 def _has_own_identifiers(query: str) -> bool:
     q = query or ""
@@ -120,6 +130,16 @@ def is_routeable_without_translator(query: str) -> bool:
     return any(keyword in q for keyword in ROUTE_KEYWORDS)
 
 
+def _split_multi_intent(query: str) -> list[str]:
+    parts = re.split(r'\s*(?:,|\.|;|\baur\b)\s+', query)
+    results = []
+    for p in parts:
+        p = re.sub(r'^(?:\s*and\s*|\s*aur\s*)', '', p.strip()).strip().rstrip(".,;")
+        if p and len(p.split()) > 1:
+            results.append(p)
+    return results if len(results) > 1 else [query]
+
+
 def _classify_query_type(query: str) -> str:
     if not query:
         return "unknown"
@@ -176,7 +196,7 @@ def _build_translator_prompt(
 @traceable(name="translator_node", run_type="chain")
 async def translator_node(state: MainState) -> MainState:
     try:
-        print("Translator node triggered")
+        print("→ translator")
         user_query = state.get("user_query", "") or ""
         import string
         user_query = user_query.strip().rstrip(string.punctuation + "/\\")
@@ -205,7 +225,7 @@ async def translator_node(state: MainState) -> MainState:
                 "detected_language": "english",
                 "document_type": doc_type,
                 "query_type": _classify_query_type(user_query),
-                "query_parts": [user_query],
+                "query_parts": _split_multi_intent(user_query),
                 "resolved_entities": [],
             }
 
@@ -225,18 +245,29 @@ async def translator_node(state: MainState) -> MainState:
             ctx = state.get("conversation_context") or {}
             ltc = state.get("last_tool_call") or {}
             summary = state.get("summary") or ""
-            prompt = _build_translator_prompt(
-                conversation_context=ctx,
-                last_tool_call=ltc,
-                summary=summary,
-            )
-            response = await normalizer_llm.ainvoke([
-                SystemMessage(content=prompt),
-                HumanMessage(content=user_query),
-            ])
-            log_token_usage(response, "translator")
-
-            data = extract_json_object(response.content)
+            cache_key = f"{user_query}::{summary[:100] if summary else ''}"
+            cached = _translation_cache.get(cache_key)
+            if cached:
+                data = cached
+            else:
+                prompt = _build_translator_prompt(
+                    conversation_context=ctx,
+                    last_tool_call=ltc,
+                    summary=summary,
+                )
+                response = await normalizer_llm.ainvoke([
+                    SystemMessage(content=prompt),
+                    HumanMessage(content=user_query),
+                ])
+                import json as _json
+                print(f"[DEBUG TRANSLATOR] response_metadata keys: {list(response.response_metadata.keys())}")
+                print(f"[DEBUG TRANSLATOR] usage_metadata: {response.usage_metadata}")
+                print(f"[DEBUG TRANSLATOR] response_metadata: {_json.dumps({k: str(v)[:200] for k, v in response.response_metadata.items()}, default=str)}")
+                log_token_usage(response, "translator")
+                data = extract_json_object(response.content)
+                if len(_translation_cache) >= _TRANSLATION_CACHE_MAX:
+                    _translation_cache.pop(next(iter(_translation_cache)))
+                _translation_cache[cache_key] = data
 
             canonical_query = data.get("canonical_query") or user_query
             language = data.get("language", "mixed")
@@ -248,6 +279,13 @@ async def translator_node(state: MainState) -> MainState:
             llm_resolved = data.get("resolved_entities") or []
             resolved_entities = (pre_resolved_entities or []) + (llm_resolved or [])
 
+            final_canonical = user_query if query_type == "conversational" else canonical_query
+            if _looks_tokenized_query_parts(query_parts):
+                print(f"[TRANSLATOR FIX] Tokenized query_parts detected: {query_parts} -> using canonical query")
+                query_parts = [final_canonical]
+            elif not query_parts:
+                query_parts = [final_canonical]
+
             print("Original query:", user_query)
             print("Canonical query:", canonical_query)
             print("Detected language:", language)
@@ -257,8 +295,6 @@ async def translator_node(state: MainState) -> MainState:
                 print("Query parts:", query_parts)
             if resolved_entities:
                 print("Resolved entities:", resolved_entities)
-
-            final_canonical = user_query if query_type == "conversational" else canonical_query
             doc_type = _override_document_type(user_query, final_canonical, data.get("document_type", "unknown"))
             return {
                 "original_query": user_query,
@@ -285,7 +321,7 @@ async def translator_node(state: MainState) -> MainState:
                 "detected_language": "mixed_or_english",
                 "document_type": doc_type,
                 "query_type": _classify_query_type(user_query),
-                "query_parts": [user_query],
+                "query_parts": _split_multi_intent(user_query),
                 "resolved_entities": [],
             }
 
@@ -300,7 +336,7 @@ async def translator_node(state: MainState) -> MainState:
             "detected_language": "english_or_mixed",
             "document_type": doc_type,
             "query_type": _classify_query_type(user_query),
-            "query_parts": [user_query],
+            "query_parts": _split_multi_intent(user_query),
             "resolved_entities": [],
         }
     except Exception as e:

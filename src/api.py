@@ -57,6 +57,7 @@ async def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict
     final_body = body or {}
 
     try:
+        print(f"[API POST] BASEURL-----------: {CHP1_API_BASE_URL!r}")
         print(f"[API POST] URL-----------: {url}")
         print(f"[API POST] BODY-----------: {final_body}")
 

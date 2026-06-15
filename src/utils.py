@@ -139,8 +139,13 @@ def max_erp_similarity(query: str) -> float:
 def log_token_usage(response, label: str):
     meta = getattr(response, "response_metadata", {}) or {}
     um = getattr(response, "usage_metadata", None) or {}
-    prompt_tokens = um.get("input_tokens") or meta.get("prompt_eval_count", 0)
-    output_tokens = um.get("output_tokens") or meta.get("eval_count", 0)
+    token_usage = meta.get("token_usage", {}) or {}
+    prompt_tokens = (um.get("input_tokens")
+                     or meta.get("prompt_eval_count")
+                     or token_usage.get("prompt_tokens", 0))
+    output_tokens = (um.get("output_tokens")
+                     or meta.get("eval_count")
+                     or token_usage.get("completion_tokens", 0))
     model = meta.get("model") or meta.get("model_name", "unknown")
     model_provider = meta.get("model_provider", "")
     tag = f"[TOKENS] {label}"
