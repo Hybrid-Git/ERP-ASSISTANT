@@ -4,7 +4,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import normalizer_llm
-from src.utils import log_token_usage, extract_json_object, NON_ENGLISH_HINTS, MULTILINGUAL_WORDS, ROUTE_KEYWORDS, INVOICE_PATTERNS, INVOICE_NO_PATTERNS
+from src.utils import log_token_usage, log_prompt, extract_json_object, NON_ENGLISH_HINTS, MULTILINGUAL_WORDS, ROUTE_KEYWORDS, INVOICE_PATTERNS, INVOICE_NO_PATTERNS
 from src.prompts import TRANSLATOR_PROMPT_BASE, META_QUESTION_PATTERNS_GLOBAL, HINGLISH_PRONOUNS, DONO_PRONOUNS, INVOICE_DOC_MAP
 from src.semantic_search import classify_domains
 
@@ -255,6 +255,7 @@ async def translator_node(state: MainState) -> MainState:
                     last_tool_call=ltc,
                     summary=summary,
                 )
+                log_prompt("normalizer_llm", prompt + "\n" + user_query)
                 response = await normalizer_llm.ainvoke([
                     SystemMessage(content=prompt),
                     HumanMessage(content=user_query),
@@ -263,7 +264,8 @@ async def translator_node(state: MainState) -> MainState:
                 print(f"[DEBUG TRANSLATOR] response_metadata keys: {list(response.response_metadata.keys())}")
                 print(f"[DEBUG TRANSLATOR] usage_metadata: {response.usage_metadata}")
                 print(f"[DEBUG TRANSLATOR] response_metadata: {_json.dumps({k: str(v)[:200] for k, v in response.response_metadata.items()}, default=str)}")
-                log_token_usage(response, "translator")
+                input_text = prompt + "\n" + user_query
+                log_token_usage(response, "translator", input_text=input_text, output_text=response.content)
                 data = extract_json_object(response.content)
                 if len(_translation_cache) >= _TRANSLATION_CACHE_MAX:
                     _translation_cache.pop(next(iter(_translation_cache)))

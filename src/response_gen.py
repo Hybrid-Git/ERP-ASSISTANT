@@ -4,7 +4,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
-from src.utils import LIST_WORDS, TOOL_DOMAINS, strip_think_tags, log_token_usage
+from src.utils import LIST_WORDS, TOOL_DOMAINS, strip_think_tags, log_token_usage, log_prompt, _get_tokenizer
 from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
 
@@ -341,6 +341,7 @@ async def response_generation_node(state: MainState):
 
     try:
         full_content = ""
+        log_prompt("summary_llm", system_prompt + "\n" + human_prompt)
         async for chunk in summary_llm.with_config({"tags": ["response_stream"]}).astream([
             SystemMessage(content=system_prompt),
             HumanMessage(content=human_prompt),
@@ -348,9 +349,10 @@ async def response_generation_node(state: MainState):
             if hasattr(chunk, "content") and chunk.content:
                 full_content += chunk.content
         response_text = strip_think_tags(full_content.strip())
-        input_chars = len(human_prompt) + len(system_prompt)
-        output_chars = len(full_content)
-        print(f"[TOKENS] response_gen | input_est={input_chars // 4} | output_est={output_chars // 4} | total_est={(input_chars + output_chars) // 4}")
+        enc = _get_tokenizer()
+        input_tokens = len(enc.encode(system_prompt + human_prompt))
+        output_tokens = len(enc.encode(full_content))
+        print(f"[TOKENS] response_gen | input={input_tokens} | output={output_tokens} | total={input_tokens + output_tokens}")
         if not response_text:
             raise ValueError("Empty response from LLM")
         response_text = _clean_llm_response(response_text)

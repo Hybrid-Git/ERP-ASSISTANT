@@ -11,7 +11,7 @@ from src.tools_api import tools_dict
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 from src.config import llm, summary_llm
 from src.utils import (
-    now, sec, log_token_usage, sanitize_tool_filters,
+    now, sec, log_token_usage, log_prompt, sanitize_tool_filters,
     TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
     extract_date_range_for_tool,strip_think_tags
 )
@@ -554,6 +554,7 @@ async def chat_model_node(state: MainState):
             except Exception as schema_e:
                 print(f"[BIND_TOOLS] Error building schema preview: {schema_e}")
 
+            log_prompt("llm", str(loop_input))
             try:
                 response = await llm.bind_tools(remaining_tools, strict=False).ainvoke(loop_input)
             except Exception as e:

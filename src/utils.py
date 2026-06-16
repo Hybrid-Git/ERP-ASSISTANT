@@ -3,6 +3,7 @@ import re
 import time
 from types import MappingProxyType
 import numpy as np
+import tiktoken
 from src.config import embedding_model, get_cfg
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 import re
@@ -136,7 +137,15 @@ def max_erp_similarity(query: str) -> float:
     except Exception:
         return 0.0
 
-def log_token_usage(response, label: str):
+_TOKENIZER = None
+
+def _get_tokenizer():
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        _TOKENIZER = tiktoken.get_encoding("cl100k_base")
+    return _TOKENIZER
+
+def log_token_usage(response, label: str, input_text: str = None, output_text: str = None):
     meta = getattr(response, "response_metadata", {}) or {}
     um = getattr(response, "usage_metadata", None) or {}
     token_usage = meta.get("token_usage", {}) or {}
@@ -146,6 +155,13 @@ def log_token_usage(response, label: str):
     output_tokens = (um.get("output_tokens")
                      or meta.get("eval_count")
                      or token_usage.get("completion_tokens", 0))
+    source = "api"
+    if not prompt_tokens and input_text:
+        prompt_tokens = len(_get_tokenizer().encode(input_text))
+        source = "local"
+    if not output_tokens and output_text:
+        output_tokens = len(_get_tokenizer().encode(output_text))
+        source = "local" if source == "local" else "local"
     model = meta.get("model") or meta.get("model_name", "unknown")
     model_provider = meta.get("model_provider", "")
     tag = f"[TOKENS] {label}"
@@ -153,6 +169,9 @@ def log_token_usage(response, label: str):
         tag += f" | provider={model_provider}"
     total = (prompt_tokens or 0) + (output_tokens or 0)
     print(f"{tag} | model={model} | input={prompt_tokens or 0} | output={output_tokens or 0} | total={total}")
+
+def log_prompt(label: str, text: str):
+    print(f"\n[FULL PROMPT] {label}\n{text}\n[END PROMPT]")
 
 def print_ollama_metadata(response):
     metadata = getattr(response, "response_metadata", {}) or {}
