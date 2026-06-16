@@ -129,7 +129,7 @@ async def response_generation_node(state: MainState):
         "If empty → 'data nahi mila'. Be conversational.\n"
     )
     if previous_summary:
-        system_prompt += f"Background conversation:\n{previous_summary}\n\n"
+        system_prompt += f"Background conversation:\n{previous_summary[:400]}\n\n"
     if conversation_context:
         entities = conversation_context.get("entities", [])
         if entities:
@@ -333,7 +333,7 @@ async def response_generation_node(state: MainState):
         f"USER QUERY:\n{original_query}\n\n"
         f"CRITICAL — Only use field names and values that are present in TOOL RESULTS below. "
         f"Do NOT invent any field name, ID, or value.\n"
-        f"TOOL RESULTS (JSON):\n{json.dumps(final_response_prompt, indent=2, ensure_ascii=False)}\n\n"
+        f"TOOL RESULTS:\n{json.dumps(final_response_prompt, separators=(',',':'), ensure_ascii=False)}\n\n"
     )
     if summary_text:
         human_prompt += f"For context (do not repeat this verbatim): {summary_text}\n\n"

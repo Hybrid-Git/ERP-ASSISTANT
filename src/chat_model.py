@@ -211,14 +211,14 @@ def build_system_prompt(
             lines.append("")
             lines.append("--- RECENT TOOL CALLS (for follow-up context) ---")
             for call in recent_calls:
-                lines.append(f"Tool: {call['name']}")
-                lines.append(f"Args: {json.dumps(call['args'])}")
+                compact = json.dumps(call['args'], separators=(',',':'))
+                lines.append(f"  {call['name']}({compact})")
             lines.append("For follow-up queries, reuse these same parameters. Only change what the user explicitly asks about.")
             lines.append("--------------------------------------------------")
         if summary:
             lines.append("")
             lines.append("--- PREVIOUS CONVERSATION CONTEXT ---")
-            lines.append(summary)
+            lines.append(summary[:800])
             lines.append("--------------------------------------------------")
         if conversation_context:
             entities = conversation_context.get("entities", [])
