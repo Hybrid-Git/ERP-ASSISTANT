@@ -147,14 +147,14 @@ async def response_generation_node(state: MainState):
     system_prompt += (
         "TOOL RESULTS are the ONLY truth — never invent fields/values. "
         "Report ALL records. Multi-part → answer each. "
-        "Truncated → say total count, ask if they want more. "
+        "If truncated, mention total count. For list queries, ask if they want more. "
         "Never use the word 'sample'. "
         "End with a natural follow-up unless yes/no/command.\n"
     )
 
     intent = state.get("query_intent", "sample")
     if intent == "count":
-        system_prompt += "COUNT: Report total from 'MORE RECORDS AVAILABLE'. Say 'aapke paas X records hain' (or 'you have X records' in English). Do NOT report shown count as total.\n"
+        system_prompt += "COUNT ONLY: Report the total number from 'MORE RECORDS AVAILABLE'. Say 'aapke paas X records hain' (or 'you have X records' in English). Do NOT mention truncation, shown count, or list records. Do NOT offer to show more records. Answer just the count and nothing else.\n"
     elif intent == "aggregate":
         system_prompt += "AGGREGATE: Use ALL records. If truncated, mention total and note values are based on shown records only.\n"
     if list_mode:
@@ -258,7 +258,10 @@ async def response_generation_node(state: MainState):
                 if info['shown'] >= info['total']
                 else f"{nice_name}: {info['shown']} out of {info['total']} shown"
             )
-        truncation_note = f"\nMORE RECORDS AVAILABLE: {'; '.join(notes)}. Ask if user wants more.\n"
+        if intent == "count":
+            truncation_note = f"\nMORE RECORDS AVAILABLE: Total: {'; '.join(notes)}. Report ONLY the total count.\n"
+        else:
+            truncation_note = f"\nMORE RECORDS AVAILABLE: {'; '.join(notes)}. Ask if user wants more.\n"
     tool_data = final_response_prompt.get("data", {})
     if isinstance(tool_data, dict):
         renamed = {}
@@ -344,29 +347,7 @@ async def response_generation_node(state: MainState):
         if not response_text.strip():
             raise ValueError("Response had only meta-framing/JSON after cleaning")
         if list_mode and response_text.strip():
-            lines = response_text.strip().split('\n')
-            has_bullets = any(line.strip().startswith('- ') for line in lines)
-            if not has_bullets:
-                print(f"[LIST-MODE-FALLBACK] LLM didn't use bullets for list query. Replacing with deterministic bullet list.")
-                fallback_parts = []
-                for recs in final_response_prompt.get("data", {}).values():
-                    if isinstance(recs, list):
-                        for rec in recs[:10]:
-                            if isinstance(rec, dict):
-                                keys = list(rec.keys())[:2]
-                                parts = [f"{k}: {rec[k]}" for k in keys if k in rec]
-                                fallback_parts.append("- " + " | ".join(parts))
-                total_count = 0
-                for v in truncation_info.values() if isinstance(truncation_info, dict) else []:
-                    total_count += v.get("total", 0) if isinstance(v, dict) else 0
-                if fallback_parts:
-                    response_text = "\n".join(fallback_parts)
-                    if total_count > len(fallback_parts):
-                        response_text += f"\n\nYe {total_count} records mein se {len(fallback_parts)} hain. Aur dikhaun?"
-                    else:
-                        response_text += f"\n\nYe {len(fallback_parts)} records hain."
-                else:
-                    response_text = "kuch nahi mila"
+            print(f"[LIST-MODE] LLM generated {len(response_text.strip().split(chr(10)))} lines for list query.")
         data = final_response.get("data", {})
         has_any_data = any(
             isinstance(recs, list) and len(recs) > 0
@@ -380,19 +361,28 @@ async def response_generation_node(state: MainState):
                 response_text = "data nahi mila"
     except Exception as e:
         print(f"Error in response generation node: {e}")
-        summary_text = final_response.get("summary", "") if isinstance(final_response, dict) else ""
-        if summary_text and len(summary_text) > 20:
-            response_text = summary_text
+        query_intent = state.get("query_intent", "")
+        if query_intent == "count" and isinstance(final_response, dict):
+            trunc_info = final_response.get("truncation_info", {})
+            if trunc_info:
+                total_strs = []
+                for tn, info in trunc_info.items():
+                    total = info.get("total", "unknown")
+                    nice_name = tn.replace("get_", "").replace("_", " ")
+                    total_strs.append(f"{nice_name}: {total}")
+                response_text = "aapke paas " + " aur ".join(total_strs) + " hain"
+            else:
+                data = final_response.get("data", {})
+                counts = [f"{tn}: {len(recs)}" for tn, recs in data.items() if isinstance(recs, list)]
+                response_text = "; ".join(counts) if counts else "data nahi mila"
+        elif isinstance(final_response, dict):
+            summary_text = final_response.get("summary", "")
+            if summary_text and len(summary_text) > 20:
+                response_text = summary_text
+            else:
+                data = final_response.get("data", {})
+                parts = [f"{tn}: {len(recs)} record(s)" for tn, recs in data.items() if isinstance(recs, list)]
+                response_text = "; ".join(parts) if parts else "data nahi mila"
         else:
-            data = final_response.get("data", {}) if isinstance(final_response, dict) else {}
-            parts = []
-            for tool_name, records in data.items() if isinstance(data, dict) else []:
-                if records and isinstance(records, list):
-                    count = len(records)
-                    parts.append(f"{tool_name}: {count} record(s)")
-            response_text = (
-                "; ".join(parts)
-                if parts
-                else (str(final_response)[:500] if isinstance(final_response, dict) else str(final_response)[:500])
-            )
+            response_text = "data nahi mila"
     return {"response_text": response_text}

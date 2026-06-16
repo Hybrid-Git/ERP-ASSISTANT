@@ -213,6 +213,57 @@ def _keyword_whitelist_filter(part: str, tools: list[str]) -> list[str]:
     return tools
 
 
+def _detect_conflict_groups(tools: list[str]) -> list[set[str]]:
+    tool_kw = {}
+    for t in tools:
+        meta = TOOL_INTENT_REGISTRY.get(t, {})
+        tool_kw[t] = list(meta.get("keywords", [])) + list(meta.get("aliases", []))
+    groups = []
+    remaining = set(tools)
+    while remaining:
+        t = remaining.pop()
+        group = {t}
+        for other in list(remaining):
+            if any(a in b or b in a for a in tool_kw[t] for b in tool_kw[other]):
+                group.add(other)
+                remaining.remove(other)
+        if len(group) > 1:
+            groups.append(group)
+    return groups
+
+
+def _apply_mutual_exclusion(part: str, tools: list[str]) -> list[str]:
+    q_lower = part.lower()
+    conflict_groups = _detect_conflict_groups(tools)
+    conflict_tools = set()
+    for g in conflict_groups:
+        conflict_tools |= g
+    result = [t for t in tools if t not in conflict_tools]
+    SPECIFIC_PREFIXES = ("get_top_", "get_popular_", "get_slow_moving_", "get_search_", "get_best_")
+    for group in conflict_groups:
+        specific = [t for t in group if any(t.startswith(p) for p in SPECIFIC_PREFIXES)]
+        general = [t for t in group if t not in specific]
+        if not specific or not general:
+            result.extend(group)
+            continue
+        winner = None
+        for spec in specific:
+            spec_meta = TOOL_INTENT_REGISTRY.get(spec, {})
+            spec_uniq = set(spec_meta.get("keywords", [])) | set(spec_meta.get("aliases", []))
+            for gen in general:
+                gen_meta = TOOL_INTENT_REGISTRY.get(gen, {})
+                spec_uniq -= set(gen_meta.get("keywords", [])) | set(gen_meta.get("aliases", []))
+            if any(kw in q_lower for kw in spec_uniq):
+                winner = spec
+                break
+        if winner:
+            result.append(winner)
+            print(f"[MUTUAL-EXCLUSION] {', '.join(general)} removed — {winner} uniquely matches query")
+        else:
+            result.extend(group)
+    return result
+
+
 def _looks_tokenized_query_parts(parts: list[str]) -> bool:
     if not parts or len(parts) <= 2:
         return False
@@ -384,6 +435,7 @@ async def semantic_search(state: MainState) -> MainState:
             if tools_for_part:
                 tools_for_part = _filter_for_list_intent(part, tools_for_part)
                 tools_for_part = _keyword_whitelist_filter(part, tools_for_part)
+                tools_for_part = _apply_mutual_exclusion(part, tools_for_part)
                 print(f"Reranker tools for part '{part}': {tools_for_part}")
                 if tools_for_part:
                     selected_tool_groups.append(tools_for_part)
@@ -393,6 +445,7 @@ async def semantic_search(state: MainState) -> MainState:
             if kw_tools:
                 kw_tools = _filter_for_list_intent(part, kw_tools)
                 kw_tools = _keyword_whitelist_filter(part, kw_tools)
+                kw_tools = _apply_mutual_exclusion(part, kw_tools)
                 print(f"Keyword fallback tools for part '{part}': {kw_tools}")
                 if kw_tools:
                     selected_tool_groups.append(kw_tools)
@@ -463,6 +516,8 @@ async def semantic_search(state: MainState) -> MainState:
 
         selected_tools = merge_unique_tools(selected_tool_groups)
         selected_tools = [t for t in selected_tools if t in tools_dict]
+        combined_query = f"{original_query or ''} {canonical_query or ''}"
+        selected_tools = _apply_mutual_exclusion(combined_query, selected_tools)
         intents_count = len(query_parts)
         if intents_count == 1:
             is_targeted = bool(re.search(

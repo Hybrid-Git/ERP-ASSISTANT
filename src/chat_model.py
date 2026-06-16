@@ -525,6 +525,7 @@ async def chat_model_node(state: MainState):
         remaining_names = list(selected_tools)
         loop_input = llm_input
         retry_count = 0
+        llm_bound_tool_names = set()
 
         while remaining_names:
             if retry_count >= 3:
@@ -537,6 +538,8 @@ async def chat_model_node(state: MainState):
             ]
             if not remaining_tools:
                 break
+
+            llm_bound_tool_names = {t.name for t in remaining_tools}
 
             step = now()
             print(f"[6] Invoking LLM with bind_tools (round {retry_count}, tools: {[t.name for t in remaining_tools]})...")
@@ -607,6 +610,7 @@ async def chat_model_node(state: MainState):
         if not all_raw_calls:
             print("[FALLBACK] No tool calls after retries — forcing LLM to pick closest tool")
             remaining_tools = available_tools
+            llm_bound_tool_names = {t.name for t in remaining_tools}
             fallback_msg = HumanMessage(
                 content=f"The user asked: {user_query}\n\n"
                         f"Available tools: {', '.join(t.name for t in remaining_tools)}\n\n"
@@ -681,6 +685,9 @@ async def chat_model_node(state: MainState):
                 qp_domains.add(doc_override)
             for tn in selected_tools:
                 if tn in called_names:
+                    continue
+                if tn in llm_bound_tool_names:
+                    print(f"[FORCE-INJECT] Skipping {tn} — was available to LLM but not called")
                     continue
                 td = set(TOOL_DOMAINS.get(tn, []))
                 if td and qp_domains and not td & qp_domains:
