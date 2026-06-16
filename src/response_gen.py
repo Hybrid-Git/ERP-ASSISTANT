@@ -146,26 +146,41 @@ async def response_generation_node(state: MainState):
 
     system_prompt += (
         "TOOL RESULTS are the ONLY truth — never invent fields/values. "
-        "Report ALL records. Multi-part → answer each. "
-        "If truncated, mention total count. For list queries, ask if they want more. "
-        "Never use the word 'sample'. "
-        "End with a natural follow-up unless yes/no/command.\n"
+        "Multi-part → answer each. "
+        "Never use the word 'sample'.\n"
     )
 
     intent = state.get("query_intent", "sample")
     if intent == "count":
-        system_prompt += "COUNT ONLY: Report the total number from 'MORE RECORDS AVAILABLE'. Say 'aapke paas X records hain' (or 'you have X records' in English). Do NOT mention truncation, shown count, or list records. Do NOT offer to show more records. Answer just the count and nothing else.\n"
-    elif intent == "aggregate":
-        system_prompt += "AGGREGATE: Use ALL records. If truncated, mention total and note values are based on shown records only.\n"
-    if list_mode:
         system_prompt += (
+            "If truncated, mention total count. "
+            "COUNT ONLY: Report the total number from 'MORE RECORDS AVAILABLE'. "
+            "Say 'aapke paas X records hain' (or 'you have X records' in English). "
+            "Do NOT mention truncation, shown count, or list records. "
+            "Do NOT offer to show more records. "
+            "Answer just the count and nothing else.\n"
+        )
+    elif list_mode:
+        system_prompt += (
+            "If truncated, mention total count. For list queries, ask if they want more. "
             "LIST MODE - STRICT:\n"
             "First line MUST say 'showing X of Y total records' "
             "(X=records shown below, Y=total from MORE RECORDS AVAILABLE).\n"
             "Then each record as '- ' bullet, 1-2 fields.\n"
-            "Never use the word 'sample'. Never use headings.\n"
+            "Never use headings.\n"
             "No numbered lists (only '- ' bullets).\n"
             "End by asking if they want to see more.\n"
+        )
+    elif intent == "aggregate":
+        system_prompt += (
+            "If truncated, mention total count. "
+            "AGGREGATE: Use ALL records. If truncated, mention total and "
+            "note values are based on shown records only.\n"
+        )
+    else:
+        system_prompt += (
+            "If truncated, mention total count. "
+            "End with a natural follow-up unless yes/no/command.\n"
         )
 
     final_response_prompt = dict(final_response)

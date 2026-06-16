@@ -57,9 +57,9 @@ async def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict
     final_body = body or {}
 
     try:
-        print(f"[API POST] BASEURL-----------: {CHP1_API_BASE_URL!r}")
-        print(f"[API POST] URL-----------: {url}")
-        print(f"[API POST] BODY-----------: {final_body}")
+        # print(f"[API POST] BASEURL-----------: {CHP1_API_BASE_URL!r}")
+        # print(f"[API POST] URL-----------: {url}")
+        # print(f"[API POST] BODY-----------: {final_body}")
 
         request_start = time.perf_counter()
 
@@ -84,7 +84,7 @@ async def api_post(endpoint: str, body: Optional[dict[str, Any]] = None) -> dict
         print(f"[API POST] REQUEST TIME-----: {request_duration:.3f}s")
 
         print(f"[API POST] STATUS----------: {response.status_code}")
-        print(f"[API POST] RESPONSE------------: {response.text[:500]}")
+        # print(f"[API POST] RESPONSE------------: {response.text[:500]}")
 
         result = parse_response(response)
         # result["endpoint"] = endpoint.strip("/")

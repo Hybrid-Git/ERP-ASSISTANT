@@ -566,7 +566,7 @@ async def get_gst_summary(
     result = flatten_gst_summary_result(result)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -598,7 +598,7 @@ async def get_tds_outstanding(
     result = append_report_summary_row(result, "tdsOutstanding")
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 @tool
@@ -629,7 +629,7 @@ async def get_tcs_outstanding(
     result = append_report_summary_row(result, "tcsOutstanding")
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -671,7 +671,7 @@ async def get_top_products(
     result = await cached_api_post(TOP_PRODUCTS_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -707,7 +707,7 @@ async def get_popular_products(
     result = await cached_api_post(POPULAR_PRODUCTS_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -743,7 +743,7 @@ async def get_slow_moving_products(
     result = await cached_api_post(SLOW_MOVING_PRODUCTS_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -790,7 +790,7 @@ async def get_sales_summary(
     result = flatten_sales_summary_result(result)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -828,7 +828,7 @@ async def get_sales_trend(
     result = flatten_sales_trend_result(result)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -870,7 +870,7 @@ async def get_top_customer(
     result = await cached_api_post(TOP_CUSTOMER_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -906,7 +906,7 @@ async def get_top_vendor(
     result = await cached_api_post(TOP_VENDOR_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -949,7 +949,7 @@ async def get_purchase_summary(
     result = flatten_purchase_summary_result(result)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -991,7 +991,7 @@ async def get_search_ledgers(
     result = await cached_api_post(LEDGERS_SEARCH_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1027,7 +1027,7 @@ async def get_search_vendors(
     result = await cached_api_post(VENDORS_SEARCH_ENDPOINT, body=body)
     result = project_result(result, fields=fields, filters=filters)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1071,7 +1071,7 @@ async def get_customer(
     result = await cached_api_post(CUSTOMER_ENDPOINT, body=body)
     result = project_result(result, fields=None, filters=None)
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1114,7 +1114,7 @@ async def get_customer_ledger(
     result = await cached_api_post(CUSTOMER_LEDGER_ENDPOINT, body=body)
 
     if not isinstance(result, dict) or not result.get("success", False):
-        print("[TOOL OUTPUT]", result)
+            # print("[TOOL OUTPUT]", result)
         return json.dumps(result, ensure_ascii=False)
 
     raw = result.get("raw_response", {}) or {}
@@ -1138,7 +1138,7 @@ async def get_customer_ledger(
         "raw_response": raw,
     }
 
-    print("[TOOL OUTPUT]", final_result)
+        # print("[TOOL OUTPUT]", final_result)
     return json.dumps(final_result, ensure_ascii=False)
 
 
@@ -1236,7 +1236,7 @@ async def get_stock_levels(
         result["count"] = len(result["data"])
         print(f"[STOCK DEBUG] After local sort: data_len={len(result['data'])}, count={result['count']}, sort_field={sort_field}, sort_order={sort_order}, limit={limit}")
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1353,7 +1353,7 @@ async def get_outstanding_sales_invoices(
         OUTSTANDING_SALES_INVOICES_ENDPOINT, body, fields, filters, "outstandingSalesInvoices"
     )
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1405,7 +1405,7 @@ async def get_outstanding_purchase_invoices(
         OUTSTANDING_PURCHASE_INVOICES_ENDPOINT, body, fields, filters, "outstandingPurchaseInvoices"
     )
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1454,7 +1454,7 @@ async def get_overdue_invoices(
         OVERDUE_INVOICES_ENDPOINT, body, fields, filters, "overdueInvoices"
     )
 
-    print("[TOOL OUTPUT]", result)
+        # print("[TOOL OUTPUT]", result)
     return json.dumps(result, ensure_ascii=False)
 
 
