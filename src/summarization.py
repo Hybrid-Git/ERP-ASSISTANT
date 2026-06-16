@@ -2,6 +2,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, RemoveMessage
 from src.schema import MainState
 from src.config import summary_llm
+from src.utils import log_prompt, log_token_usage, _get_tokenizer
 import re
 import os
 from dotenv import load_dotenv
@@ -36,7 +37,9 @@ async def summarization_node(state: MainState):
             f"/no_think\n"
         )
         summary_input = [SystemMessage(content=summary_prompt)] + messages_to_summarize
+        log_prompt("summarization", str(summary_input))
         response = await summary_llm.ainvoke(summary_input)
+        log_token_usage(response, "summarization", input_text=str(summary_input), output_text=response.content)
         new_summary = response.content
         if not new_summary:
             new_summary = ""
