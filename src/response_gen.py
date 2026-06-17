@@ -112,8 +112,6 @@ async def response_generation_node(state: MainState):
     previous_summary = state.get("summary", "") or ""
     conversation_context = state.get("conversation_context", {})
 
-    list_mode = state.get("query_intent") == "list_all"
-
     system_prompt = (
         "You are an ERP assistant. Reply using ONLY the tool results below.\n"
         "Vary your tone. Mirror the user's language. "
@@ -133,43 +131,39 @@ async def response_generation_node(state: MainState):
         "Mirror the user's words. "
         "Do NOT switch to pure English if the user didn't use English.\n"
     )
+    if original_query:
+        system_prompt += (
+            f"WORD-LEVEL MIRROR: The user's query uses words like "
+            f"'{' '.join(original_query.split()[:3])}...'. "
+            f"Reply using the exact same pronouns and helper words they used. "
+            f"Do NOT switch to a different dialect.\n"
+        )
 
     system_prompt += (
         "TOOL RESULTS are the ONLY truth — never invent fields/values. "
         "Multi-part → answer each. "
         "Never use the word 'sample'.\n"
+        "If the TOOL RESULTS don't contain data matching what the user asked about, "
+        "say 'data nahi mila'. Do NOT pretend records from one category "
+        "are records from another category.\n"
     )
 
     intent = state.get("query_intent", "sample")
     if intent == "count":
         system_prompt += (
             "If truncated, mention total count. "
-            "COUNT ONLY: Report the total number from 'MORE RECORDS AVAILABLE'. "
-            "Say the count in the same language style as the user's query. " 
+            "COUNT ONLY: Report the total number. "
+            "Say the count in the same language style as the user's query. "
             "Do NOT mention truncation, shown count, or list records. "
             "Do NOT offer to show more records. "
             "Answer just the count and nothing else.\n"
         )
-    elif list_mode:
-        system_prompt += (
-            "If truncated, mention total count. For list queries, ask if they want more. "
-            "LIST MODE - STRICT:\n"
-            "First line MUST state the count (X of Y total) in the same language style as the user's query.\n"
-            "Then each record as '- ' bullet, 1-2 fields.\n"
-            "Never use headings.\n"
-            "No numbered lists (only '- ' bullets).\n"
-            "End by asking if they want to see more.\n"
-        )
-    elif intent == "aggregate":
-        system_prompt += (
-            "If truncated, mention total count. "
-            "AGGREGATE: Use ALL records. If truncated, mention total and "
-            "note values are based on shown records only.\n"
-        )
     else:
         system_prompt += (
-            "If truncated, mention total count. "
-            "End with a natural follow-up unless yes/no/command.\n"
+            "If multiple records, show each as a '- ' bullet, max 1-2 fields per record. "
+            "If truncated, mention total count and ask if user wants to see more. "
+            "End with a natural follow-up question in the user's language style. "
+            "Never use headings or numbered lists.\n"
         )
 
     final_response_prompt = dict(final_response)
@@ -323,8 +317,8 @@ async def response_generation_node(state: MainState):
         )
         if not response_text.strip():
             raise ValueError("Response had only meta-framing/JSON after cleaning")
-        if list_mode and response_text.strip():
-            print(f"[LIST-MODE] LLM generated {len(response_text.strip().split(chr(10)))} lines for list query.")
+        if response_text.strip() and original_query:
+            print(f"[RESPONSE] {len(response_text.strip().split(chr(10)))} lines for: {original_query[:60]}")
         data = final_response.get("data", {})
         has_any_data = any(
             isinstance(recs, list) and len(recs) > 0

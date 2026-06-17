@@ -24,6 +24,7 @@ normalizer_llm = ChatOpenAI(
     response_format={"type": "json_object"},
     extra_body={
         "keep_alive": "5m",
+        "reasoning_effort": None
     },
 )
 llm = ChatOpenAI(
@@ -50,6 +51,7 @@ summary_llm = ChatOpenAI(
 
     extra_body={
         "keep_alive": "5m",
+        "reasoning_effort": None
     },
 )
 

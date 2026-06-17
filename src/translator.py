@@ -220,4 +220,5 @@ async def translator_node(state: MainState) -> MainState:
             "detected_language": "unknown",
             "document_type": "unknown",
             "query_type": "unknown",
+            "query_parts": [user_query],
         }
