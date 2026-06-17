@@ -8,11 +8,13 @@ import re
 
 from src.config import get_cfg
 
-CITY_WORDS = get_cfg("cities", default=[
-    "BANGALORE", "KOLKATA", "MUMBAI", "DELHI", "SURAT",
-    "AHMEDABAD", "PUNE", "CHENNAI", "HYDERABAD",
-    "BHIWANDI", "TAURU", "GUWAHATI", "PUNJAB",
-])
+# --- COMMENTED OUT (zero-regex migration): city words ---
+# CITY_WORDS = get_cfg("cities", default=[
+#     "BANGALORE", "KOLKATA", "MUMBAI", "DELHI", "SURAT",
+#     "AHMEDABAD", "PUNE", "CHENNAI", "HYDERABAD",
+#     "BHIWANDI", "TAURU", "GUWAHATI", "PUNJAB",
+# ])
+CITY_WORDS = []
 
 TOOL_INTENT_REGISTRY = {
     "get_customer": {

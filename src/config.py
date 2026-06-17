@@ -21,6 +21,7 @@ normalizer_llm = ChatOpenAI(
     temperature=0.0,
     max_tokens=256,
     timeout=60,
+    response_format={"type": "json_object"},
     extra_body={
         "keep_alive": "5m",
     },

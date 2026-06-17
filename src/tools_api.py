@@ -544,8 +544,8 @@ def flatten_sales_trend_result(result: dict) -> dict:
 # ============================================================
 @tool
 async def get_gst_summary(
-    from_date: str,
-    to_date: str,
+    from_date: str = "",
+    to_date: str = "",
     fields: Optional[Any] = None,
     filters: Optional[dict[str, Any]] = None,
 ):

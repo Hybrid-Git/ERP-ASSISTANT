@@ -4,8 +4,10 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
-from src.utils import LIST_WORDS, TOOL_DOMAINS, strip_think_tags, _get_tokenizer
-from src.prompts import HINGLISH_PRONOUNS
+from src.utils import strip_think_tags, _get_tokenizer
+# --- COMMENTED OUT (zero-regex migration): word-list imports ---
+# from src.utils import LIST_WORDS, TOOL_DOMAINS
+# from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
 
 
@@ -107,20 +109,10 @@ async def response_generation_node(state: MainState):
                 original_query = getattr(msg, "content", "") or ""
                 break
     detected_language = state.get("detected_language") or "auto"
-
-    if detected_language not in ("hinglish", "hindi"):
-        hinglish_words = {"batao", "chaia", "wale", "ka", "ki", "kya", "hai", "kitne", "konse", "konsa", "karli", "hua", "hue"}
-        tokens = re.findall(r"\w+", original_query.lower())
-        if any(w in tokens for w in hinglish_words):
-            detected_language = "hinglish"
-
     previous_summary = state.get("summary", "") or ""
     conversation_context = state.get("conversation_context", {})
 
-    list_mode = bool(re.search(
-        r'\b(' + '|'.join(re.escape(w) for w in LIST_WORDS) + r')\b',
-        original_query, re.IGNORECASE
-    ))
+    list_mode = state.get("query_intent") == "list_all"
 
     system_prompt = (
         "You are an ERP assistant. Reply using ONLY the tool results below.\n"
@@ -135,13 +127,11 @@ async def response_generation_node(state: MainState):
         if entities:
             system_prompt += f"KNOWN ENTITIES:\n{json.dumps(entities[-3:], indent=2, ensure_ascii=False)}\n\n"
 
-    mode_map = {"hinglish": "Hinglish (Hindi words in English letters)", "hindi": "Hinglish"}
-    lang_mode = mode_map.get(detected_language, "English")
     system_prompt += (
-        "LANGUAGE: Reply in " + lang_mode + ". "
-        "Use ONLY a-z A-Z 0-9. No Devanagari. "
-        "Write Hindi with English letters (aap/hai/nahi). "
-        "Mirror the user's words.\n"
+        "LANGUAGE RULE: Reply using the same style of words as the user's query. "
+        "Use ONLY a-z A-Z 0-9 — no non-Latin characters or scripts. "
+        "Mirror the user's words. "
+        "Do NOT switch to pure English if the user didn't use English.\n"
     )
 
     system_prompt += (
@@ -155,7 +145,7 @@ async def response_generation_node(state: MainState):
         system_prompt += (
             "If truncated, mention total count. "
             "COUNT ONLY: Report the total number from 'MORE RECORDS AVAILABLE'. "
-            "Say 'aapke paas X records hain' (or 'you have X records' in English). "
+            "Say the count in the same language style as the user's query. " 
             "Do NOT mention truncation, shown count, or list records. "
             "Do NOT offer to show more records. "
             "Answer just the count and nothing else.\n"
@@ -164,8 +154,7 @@ async def response_generation_node(state: MainState):
         system_prompt += (
             "If truncated, mention total count. For list queries, ask if they want more. "
             "LIST MODE - STRICT:\n"
-            "First line MUST say 'showing X of Y total records' "
-            "(X=records shown below, Y=total from MORE RECORDS AVAILABLE).\n"
+            "First line MUST state the count (X of Y total) in the same language style as the user's query.\n"
             "Then each record as '- ' bullet, 1-2 fields.\n"
             "Never use headings.\n"
             "No numbered lists (only '- ' bullets).\n"
@@ -191,26 +180,7 @@ async def response_generation_node(state: MainState):
     summary_text = re.sub(r';\s*[^:]+:\s*', '; ', summary_text)
     data = final_response_prompt.get("data", {})
 
-    doc_type = (state.get("document_type", "") or "").lower()
-    if doc_type == "general":
-        orig_q = (state.get("original_query", "") or "").lower()
-        is_follow_up = any(re.search(rf'\b{re.escape(p)}\b', orig_q) for p in HINGLISH_PRONOUNS)
-        if is_follow_up:
-            customer_vendor_domains = {"customer", "vendor"}
-            filtered = {}
-            for tool_name, records in data.items():
-                td = set(TOOL_DOMAINS.get(tool_name, []))
-                if td & customer_vendor_domains:
-                    filtered[tool_name] = records
-                else:
-                    print(f"[DOMAIN-FILTER] {tool_name}: {len(records) if isinstance(records, list) else 'non-list'} records removed (domain {td} not in customer/vendor)")
-            if filtered:
-                final_response_prompt["data"] = filtered
-
-    detail_mode = bool(re.search(
-        r'\b(all details?|detailed|sabhi detail|saari detail|full info|complete info|sara detail|poora detail|saare detail|pura detail|puri detail|pura detailed|puri detailed|poora detailed)\b',
-        original_query, re.IGNORECASE
-    ))
+    detail_mode = state.get("query_intent") == "detail"
 
     invoice_match = final_response_prompt.pop("_invoice_match", None)
     if invoice_match and isinstance(invoice_match, dict):
@@ -220,16 +190,7 @@ async def response_generation_node(state: MainState):
     data = final_response_prompt.get("data", {})
 
     canonical = state.get("canonical_query", "") or ""
-    has_range_filter = bool(re.search(
-        r'(?:between|range)\s+(-?\d+(?:\.\d+)?)\s+(?:and|to|–|-)\s+(-?\d+(?:\.\d+)?)',
-        original_query, re.IGNORECASE
-    )) or bool(re.search(
-        r'\b(\d+(?:\.\d+)?)\s+se\s+(\d+(?:\.\d+)?)\s+ke?\s+bich',
-        original_query, re.IGNORECASE
-    )) or bool(re.search(
-        r'(?:between|range)\s+(-?\d+(?:\.\d+)?)\s+(?:and|to|–|-)\s+(-?\d+(?:\.\d+)?)',
-        canonical, re.IGNORECASE
-    ))
+    has_range_filter = False
 
     # truncation already done in deterministic_final.py per intent
 

@@ -12,33 +12,35 @@ from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 from src.config import llm, summary_llm
 from src.utils import (
     now, sec, log_token_usage, sanitize_tool_filters,
-    TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
-    extract_date_range_for_tool, strip_think_tags,
+    strip_think_tags,
 )
-from src.semantic_search import classify_domains
-from src.prompts import META_QUESTION_PATTERNS_GLOBAL, _REFERENCE_PATTERN
+# --- COMMENTED OUT (zero-regex migration): word-list imports ---
+#     TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
+#     extract_date_range_for_tool,
+# from src.semantic_search import classify_domains
+# from src.prompts import META_QUESTION_PATTERNS_GLOBAL, _REFERENCE_PATTERN
+from src.prompts import META_QUESTION_PATTERNS_GLOBAL
 
-SCOPE_WORDS = {
-    "all", "every", "each",
-    "sab", "sabhi", "sare", "saare", "sari", "saari",
-    "poora", "pura", "saara", "har",
-}
-DOMAIN_WORDS_FOR_EMPTY_SEARCH = {
-    "products", "product", "items", "item", "stock", "inventory",
-    "customers", "customer", "parties", "party",
-    "vendors", "vendor", "suppliers", "supplier",
-    "maal", "samaan",
-}
-
-
-def clean_scope_search_value(value: str) -> str:
-    if not isinstance(value, str):
-        return value
-    q = value.strip().lower()
-    tokens = set(re.findall(r"[a-z0-9]+", q))
-    if tokens and tokens <= (SCOPE_WORDS | DOMAIN_WORDS_FOR_EMPTY_SEARCH):
-        return ""
-    return value
+# --- COMMENTED OUT (zero-regex migration): scope words ---
+# SCOPE_WORDS = {
+#     "all", "every", "each",
+#     "sab", "sabhi", "sare", "saare", "sari", "saari",
+#     "poora", "pura", "saara", "har",
+# }
+# DOMAIN_WORDS_FOR_EMPTY_SEARCH = {
+#     "products", "product", "items", "item", "stock", "inventory",
+#     "customers", "customer", "parties", "party",
+#     "vendors", "vendor", "suppliers", "supplier",
+#     "maal", "samaan",
+# }
+# def clean_scope_search_value(value: str) -> str:
+#     if not isinstance(value, str):
+#         return value
+#     q = value.strip().lower()
+#     tokens = set(re.findall(r"[a-z0-9]+", q))
+#     if tokens and tokens <= (SCOPE_WORDS | DOMAIN_WORDS_FOR_EMPTY_SEARCH):
+#         return ""
+#     return value
 
 
 def _strip_schema_descriptions(tool_schemas: list[dict]) -> list[dict]:
@@ -153,10 +155,11 @@ CATEGORY_SUMMARIES: dict[str, tuple[str, str]] = {
 }
 
 _LANG_RULE = (
-    "Speak the same language the user used (English or Hinglish). "
-    "If Hindi/Hinglish, use ONLY a-z A-Z 0-9 and basic punctuation "
-    "— no Devanagari or non-Latin characters. "
-    "Write Hindi with English letters: 'aap', 'hai', 'nahi', 'ka'."
+    "Speak the same language the user used. "
+    "Use ONLY a-z A-Z 0-9 and basic punctuation "
+    "— no non-Latin characters or scripts. "
+    "Mirror the user's style. "
+    "Do NOT switch to pure English if the user didn't use English."
 )
 
 def _build_capability_text() -> str:
@@ -203,8 +206,8 @@ def build_system_prompt(
         "CRITICAL: Clear ALL params when switching tools — reuse only within same tool.",
     ]
 
-    check_query = f"{original_query} {user_query}" if original_query else user_query
-    is_follow_up = bool(_REFERENCE_PATTERN.search(check_query)) or len(user_query.split()) <= 3
+    # Short queries are likely follow-ups; always include context if available
+    is_follow_up = len(user_query.split()) <= 3
     if messages and is_follow_up:
         recent_calls = _get_recent_tool_calls(messages)
         if recent_calls:
@@ -661,65 +664,22 @@ async def chat_model_node(state: MainState):
                         break
                 response = AIMessage(content="", tool_calls=list(all_raw_calls))
 
-        query_parts = state.get("query_parts", [original_query])
-        combined_q = (f"{original_query or ''} {state.get('canonical_query', '') or ''}").lower()
-        doc_override = state.get("document_type", "").replace("_invoice", "").replace("_", "")
-        query_invoice_no = None
-        for pat in INVOICE_NO_PATTERNS:
-            m = re.search(pat, combined_q, re.IGNORECASE)
-            if m:
-                query_invoice_no = m.group(0)
-                break
-
-        known_entity_ids = set()
-        for e in (state.get("conversation_context") or {}).get("entities", []):
-            eid = e.get("id")
-            if eid is not None:
-                known_entity_ids.add(str(eid))
-
-        for qp in query_parts:
-            qp_lower = qp.lower()
-            qp_domains, _ = classify_domains(qp, state.get("resolved_entities"))
-            if doc_override:
-                qp_domains.add(doc_override)
-            for tn in selected_tools:
-                if tn in called_names:
-                    continue
-                if tn in llm_bound_tool_names:
-                    print(f"[FORCE-INJECT] Skipping {tn} — was available to LLM but not called")
-                    continue
-                td = set(TOOL_DOMAINS.get(tn, []))
-                if td and qp_domains and not td & qp_domains:
-                    continue
-                if not qp_domains:
-                    meta = TOOL_INTENT_REGISTRY.get(tn, {})
-                    all_kw = set(meta.get("keywords", [])) | set(meta.get("aliases", []))
-                    if not any(kw in qp_lower for kw in all_kw):
-                        continue
-                # Skip force-injecting get_top_customer when query is about a specific
-                # customer search (city, name, location) — it only returns revenue aggregates.
-                if tn == "get_top_customer":
-                    top_kws = {"top customer", "best customer", "highest", "most revenue", "top buyer", "top client"}
-                    if not any(kw in qp_lower for kw in top_kws):
-                        customer_search_kws = {"customer", "party", "detail", "information", "bangalore", "details", "name", "names"}
-                        if any(kw in qp_lower for kw in customer_search_kws):
-                            print(f"[FORCE-INJECT] Skipping {tn} — query is a customer search, not a top-customer query")
-                            continue
-                # Skip force-injecting get_customer_ledger with empty args — customer_id is required.
-                if tn == "get_customer_ledger" and not known_entity_ids:
-                    print(f"[FORCE-INJECT] Skipping {tn} — no known customer_id available")
-                    continue
-                inject_args = {}
-                if tn in INVOICE_TOOLS and query_invoice_no:
-                    inject_args = {"filters": {"invoiceNo": query_invoice_no}}
-                all_raw_calls.append({
-                    "name": tn,
-                    "args": inject_args,
-                    "id": f"call_force_{tn}_{uuid.uuid4().hex[:8]}",
-                    "type": "tool_call",
-                })
-                called_names.add(tn)
-                print(f"[FORCE-INJECT] Adding missing tool: {tn} for query part '{qp}' (args: {inject_args})")
+        # --- SIMPLIFIED FORCE-INJECT (zero-regex migration) ---
+        # Just call remaining selected tools with empty args if LLM didn't call them
+        for tn in selected_tools:
+            if tn in called_names:
+                continue
+            if tn in llm_bound_tool_names:
+                print(f"[FORCE-INJECT] Skipping {tn} — was available to LLM but not called")
+                continue
+            all_raw_calls.append({
+                "name": tn,
+                "args": {},
+                "id": f"call_force_{tn}_{uuid.uuid4().hex[:8]}",
+                "type": "tool_call",
+            })
+            called_names.add(tn)
+            print(f"[FORCE-INJECT] Adding missing tool: {tn}")
 
         raw_tool_calls = all_raw_calls
         tool_calls = []
@@ -730,31 +690,10 @@ async def chat_model_node(state: MainState):
             if not repair:
                 return {"name": name, "args": args}
             combined_q = f"{original_query or ''} {state.get('canonical_query', '') or ''}".lower()
-            worker_has = {}
-            if args:
-                for dk in ("from_date", "to_date"):
-                    v = args.get(dk)
-                    if v and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(v)):
-                        worker_has[dk] = v
-            summary_text = state.get("summary", "") or ""
-            messages_list = state.get("messages", [])
-            recent_tool_dates = ""
-            for msg in reversed(messages_list[:-1]):
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        tc_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-                        for dk in ("from_date", "to_date"):
-                            dv = tc_args.get(dk, "") if isinstance(tc_args, dict) else ""
-                            if dv:
-                                recent_tool_dates += " " + str(dv)
-                    if recent_tool_dates.strip():
-                        break
-            if worker_has and not re.search(r"\d{4}-\d{2}-\d{2}|\b\d{4}\b", combined_q + " " + summary_text + recent_tool_dates):
-                worker_has = {}
             worker_extra = {}
             if args:
                 for k, v in args.items():
-                    if k not in ("from_date", "to_date") and v is not None:
+                    if v is not None:
                         worker_extra[k] = v
             if repair.get("overwrite"):
                 new_args = dict(repair.get("base_args", {}))
@@ -764,89 +703,9 @@ async def chat_model_node(state: MainState):
                             new_args[k] = v
             else:
                 new_args = dict(args or {})
-            for dk, dv in worker_has.items():
-                new_args[dk] = dv
             for kw, kwar in repair.get("keyword_args", {}).items():
                 if kw.lower() in combined_q:
                     new_args.update(kwar)
-            if repair.get("extract_customer_id"):
-                cm = re.search(r"(?:customer|party|client)\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)", combined_q)
-                if cm:
-                    new_args["customer_id"] = int(cm.group(1))
-            date_kws = repair.get("date_keywords")
-            if date_kws and (not new_args.get("from_date") or not new_args.get("to_date")):
-                f, t = extract_date_range_for_tool(combined_q, date_kws)
-                if f:
-                    new_args["from_date"] = f
-                    new_args["to_date"] = t
-            DATE_REQUIRED_TOOLS = {"get_gst_summary", "get_tds_outstanding", "get_tcs_outstanding"}
-            if name in DATE_REQUIRED_TOOLS:
-                has_dates = bool(new_args.get("from_date")) and bool(new_args.get("to_date"))
-                if not has_dates:
-                    print(f"[{name.upper()}] No date range found — signalling clarification needed")
-                    return {"name": name, "args": new_args, "_needs_date_range": True}
-            low_stock_kws = repair.get("low_stock_only_keywords")
-            if low_stock_kws and new_args.get("low_stock_only") is True:
-                if not any(kw in combined_q for kw in low_stock_kws):
-                    new_args["low_stock_only"] = False
-            if name == "get_stock_levels":
-                q_parsed = re.sub(
-                    r'\b(?:negative|minus)\s+(\d+(?:\.\d+)?)',
-                    r'-\1', combined_q, flags=re.IGNORECASE
-                )
-                range_pat = re.compile(
-                    r'(?:'
-                    r'(?:between|range)\s+(-?\d+(?:\.\d+)?)\s+(?:and|to|–|-)\s+(-?\d+(?:\.\d+)?)'
-                    r'|'
-                    r'(-?\d+(?:\.\d+)?)\s+(?:se|to|–|-)\s+(-?\d+(?:\.\d+)?)\s*(?:ke?\s+bi(?:ch|c?h)|ke?\s+be\w*ch)?'
-                    r')',
-                    re.IGNORECASE,
-                )
-                m = range_pat.search(q_parsed)
-                if m:
-                    vals = [g for g in m.groups() if g is not None]
-                    if len(vals) >= 2:
-                        try:
-                            min_val = min(float(vals[0]), float(vals[1]))
-                            max_val = max(float(vals[0]), float(vals[1]))
-                            existing_filters = new_args.get("filters", {}) or {}
-                            existing_filters["closingQty"] = {"gte": min_val, "lte": max_val}
-                            new_args["filters"] = existing_filters
-                            term_val = new_args.get("term")
-                            if term_val:
-                                print(f"[RANGE-FILTER] {name}: cleared term='{term_val}' (range filter injected)")
-                                # del new_args["term"]
-                                new_args["term"] = ""
-                                worker_extra.pop("term",None)
-                            new_args["limit"] = max(new_args.get("limit", 10), 1000)
-                            print(f"[RANGE-FILTER] {name}: injected closingQty range {min_val}–{max_val}, limit={new_args['limit']}")
-                        except (ValueError, TypeError):
-                            pass
-            if name == "get_customer":
-                cust_num = re.search(r"(?:customer|party|client)\s*(?:number|no|#)?\s*:?\s*(\d+)", combined_q)
-                if cust_num and not new_args.get("search"):
-                    new_args["search"] = cust_num.group(1)
-            if name in INVOICE_TOOLS:
-                inv_no = new_args.pop("invoice_no", None)
-                if not inv_no:
-                    for pat in INVOICE_NO_PATTERNS:
-                        m = re.search(pat, combined_q, re.IGNORECASE)
-                        if m:
-                            inv_no = m.group(0)
-                            print(f"[REPAIR] {name}: filled invoice_no='{inv_no}' from query")
-                            break
-                if inv_no:
-                    existing_filters = new_args.get("filters", {}) or {}
-                    existing_filters["invoiceNo"] = inv_no
-                    new_args["filters"] = existing_filters
-                    new_args["limit"] = 5000
-                    new_args["sort_by"] = "invoiceDate"
-                    new_args["sort_order"] = "desc"
-                    if new_args.get("customer_id") or new_args.get("party_id"):
-                        if not re.search(r'\b(customer|party|client|vendor|ledger)\b', combined_q, re.IGNORECASE):
-                            new_args.pop("customer_id", None)
-                            new_args.pop("party_id", None)
-                            print(f"[CROSS-VALIDATE] {name}: stripped customer/party ID (invoice_no present, query doesn't mention customer)")
             param_aliases = repair.get("param_aliases", {})
             for llm_arg, real_param in param_aliases.items():
                 if llm_arg in new_args and real_param not in new_args:
@@ -854,10 +713,7 @@ async def chat_model_node(state: MainState):
             for k, v in worker_extra.items():
                 if k not in new_args or new_args.get(k) in (None, "", []):
                     new_args[k] = v
-            if re.search(r'\b(sabse\s+kam|sabse\s+jya[dz]a|sabse\s+zyada|least|most|lowest|highest|minimum|maximum)\b', combined_q) and not re.search(r'\b(top\s+\d+|first\s+\d+|last\s+\d+)\b', combined_q):
-                if "limit" not in new_args or new_args.get("limit", 10) > 5:
-                    new_args["limit"] = 1
-            elif "limit" in new_args and isinstance(new_args.get("limit"), int):
+            if "limit" in new_args and isinstance(new_args.get("limit"), int):
                 intent = state.get("query_intent", "sample")
                 intent_limits = {
                     "count": 10000,
@@ -895,8 +751,6 @@ async def chat_model_node(state: MainState):
                     print(f"[STRIP] {tool_name}: removing unknown param '{k}'")
             return cleaned
 
-        needs_date_clarification = []
-
         def _repair_tool_call(name: str, args: dict) -> dict | None:
             # Unwrap tool/parameters wrapper format (Qwen non-standard tool call format)
             if "parameters" in args and isinstance(args["parameters"], dict):
@@ -921,9 +775,6 @@ async def chat_model_node(state: MainState):
                     args[canonical] = args.pop(alias)
             result = _apply_repair(name, args, original_query)
             if result:
-                if result.get("_needs_date_range"):
-                    needs_date_clarification.append(result["name"])
-                    return None
                 # Move unknown params into filters (LLM often passes filter fields at top level)
                 rargs = result["args"]
                 schema = tools_dict[name].args_schema
@@ -937,14 +788,7 @@ async def chat_model_node(state: MainState):
                     rargs["filters"] = existing_filters
                     print(f"[PARAM-TO-FILTERS] {name}: moved unknown params into filters: {unknown_params}")
                 result["args"] = _strip_unknown_params(name, result["args"])
-                # Normalize filter values and search params
                 rargs = result["args"]
-                for nk in ("search", "search_term", "term"):
-                    if nk in rargs and isinstance(rargs[nk], str):
-                        old = rargs[nk]
-                        rargs[nk] = clean_scope_search_value(rargs[nk])
-                        if old != rargs[nk]:
-                            print(f"[ARG CLEANUP] {name}.{nk}: {old!r} -> {rargs[nk]!r}")
                 filters_dict = rargs.get("filters")
                 if isinstance(filters_dict, dict):
                     for fk, fv in filters_dict.items():
@@ -1018,19 +862,6 @@ async def chat_model_node(state: MainState):
 
 
         memory_answer = ""
-        if needs_date_clarification and tool_calls:
-            non_date_tools = [tc for tc in tool_calls if tc["name"] not in needs_date_clarification]
-            if not non_date_tools:
-                tools_str = ", ".join(needs_date_clarification)
-                memory_answer = (
-                    f"Main aapki madad ke liye [**{needs_date_clarification[0]}**] tool use karna chahta hoon, "
-                    f"lekin iske liye date range (from_date / to_date) chahiye. "
-                    f"Kya aap kripya karke starting aur ending date bata sakte hain?\n"
-                    f"Jaise: '1 April 2025 se 31 March 2026 ka data chahiye'"
-                )
-                print(f"[DATE NEAR] All tools need date range: {tools_str}")
-            else:
-                print(f"[DATE NEAR] Skipping memory_answer — {len(non_date_tools)} tool(s) have data: {[t['name'] for t in non_date_tools]}")
 
         return {
             "messages": [HumanMessage(content=user_query), response],

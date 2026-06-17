@@ -8,58 +8,45 @@ from src.config import embedding_model, get_cfg
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 import re
 
-
-NON_ENGLISH_HINTS = get_cfg("hinglish", "non_english_hints", default=[])
-MULTILINGUAL_WORDS = get_cfg("hinglish", "multilingual_words", default=[])
-ROUTE_KEYWORDS = get_cfg("route_keywords", default=[])
-CONNECTORS = get_cfg("connectors", default=[])
-STOP_TOKENS = set(get_cfg("stop_tokens", default=[]))
-SEGMENT_NEXT_KEYWORDS = get_cfg("segment_next_keywords", default=[])
+# --- COMMENTED OUT (zero-regex migration): word-lists loaded from config ---
+# NON_ENGLISH_HINTS = get_cfg("hinglish", "non_english_hints", default=[])
+# MULTILINGUAL_WORDS = get_cfg("hinglish", "multilingual_words", default=[])
+# ROUTE_KEYWORDS = get_cfg("route_keywords", default=[])
+# CONNECTORS = get_cfg("connectors", default=[])
+# STOP_TOKENS = set(get_cfg("stop_tokens", default=[]))
+# SEGMENT_NEXT_KEYWORDS = get_cfg("segment_next_keywords", default=[])
+NON_ENGLISH_HINTS = []
+MULTILINGUAL_WORDS = []
+ROUTE_KEYWORDS = []
+CONNECTORS = []
+STOP_TOKENS = set()
+SEGMENT_NEXT_KEYWORDS = []
 TH_EMBEDDING_RECALL_MIN = get_cfg("thresholds", "embedding_recall_min", default=0.3)
 TH_RERANKER_TOP_K = get_cfg("thresholds", "reranker_top_k", default=5)
-PARTY_WORDS = get_cfg("party_words", default=[])
-NAME_WORDS = get_cfg("name_words", default=[])
-LIST_WORDS = get_cfg("list_words", default=[])
-DOMAIN_KEYWORDS = MappingProxyType({
-    "sales": ["sales", "sale", "sell", "sold", "overdue", "receivable", "debtor", "billing"],
-    "purchase": ["purchase", "kharidi", "buy", "bought", "payable", "creditor", "bills payable"],
-    "customer": ["customer", "client", "party", "ledger", "customer name", "customer list", "customer code"],
-    "vendor": ["vendor", "supplier", "vendor list"],
-    "gst": ["gst", "gst summary", "gst detail", "gstr", "taxable", "igst", "cgst", "sgst", "b2b", "b2c"],
-    "tax": ["tds", "tcs", "tax deducted", "tax collected", "tax outstanding"],
-    "stock": ["stock", "inventory", "quantity", "hsn", "product", "slow moving", "stock level"],
-    "analytics": ["top", "popular", "trend", "summary", "analytics", "report"],
-})
-INVOICE_PATTERNS = {
-    "sales": [r"\bA/\d{4}/C\d{4}\b", r"\bAI/\d{4}/\d{4}\b", r"\bSI-?\d+\b", r"\bOUT-?\d+\b"],
-    "purchase": [r"\bPR-?\d+\b"],
-}
-INVOICE_NO_PATTERNS = get_cfg("identifier_patterns", "invoice_no", default=[
-    r'\bPR[-/]?\d+\b', r'\bA/\d{4}/C\d{4}\b', r'\bAI/\d{4}/\d{4}\b',
-    r'\bAI/\d{2}-\d{2}/\d{3,4}\b', r'\bSI[-/]?\d+\b', r'\bOUT[-/]?\d+\b',
-])
-TOOL_DOMAINS = {
-    "get_customer": ["customer"],
-    "get_customer_ledger": ["customer"],
-    "get_search_ledgers": ["ledger"],
-    "get_stock_levels": ["stock"],
-    "get_gst_summary": ["gst"],
-    "get_tds_outstanding": ["tax"],
-    "get_tcs_outstanding": ["tax"],
-    "get_top_products": ["analytics"],
-    "get_popular_products": ["analytics"],
-    "get_slow_moving_products": ["analytics", "stock"],
-    "get_sales_summary": ["analytics", "sales"],
-    "get_sales_trend": ["analytics", "sales"],
-    "get_top_customer": ["customer", "analytics"],
-    "get_top_vendor": ["vendor", "analytics"],
-    "get_purchase_summary": ["analytics", "purchase"],
-    "get_search_vendors": ["vendor"],
-    "get_outstanding_sales_invoices": ["sales"],
-    "get_outstanding_purchase_invoices": ["purchase"],
-    "get_overdue_invoices": ["sales", "purchase"],
-}
-INVOICE_TOOLS = {"get_outstanding_sales_invoices", "get_outstanding_purchase_invoices", "get_overdue_invoices"}
+# --- COMMENTED OUT (zero-regex migration): word-lists ---
+# PARTY_WORDS = get_cfg("party_words", default=[])
+# NAME_WORDS = get_cfg("name_words", default=[])
+# LIST_WORDS = get_cfg("list_words", default=[])
+PARTY_WORDS = []
+NAME_WORDS = []
+LIST_WORDS = []
+# --- COMMENTED OUT (zero-regex migration): DOMAIN_KEYWORDS ---
+# DOMAIN_KEYWORDS = MappingProxyType({
+#     "sales": [...], "purchase": [...], ...
+# })
+DOMAIN_KEYWORDS = MappingProxyType({})
+# --- COMMENTED OUT (zero-regex migration): INVOICE_PATTERNS ---
+# INVOICE_PATTERNS = { "sales": [...], "purchase": [...] }
+INVOICE_PATTERNS = {}
+# --- COMMENTED OUT (zero-regex migration): INVOICE_NO_PATTERNS ---
+# INVOICE_NO_PATTERNS = get_cfg("identifier_patterns", "invoice_no", default=[...])
+INVOICE_NO_PATTERNS = []
+# --- COMMENTED OUT (zero-regex migration): TOOL_DOMAINS ---
+# TOOL_DOMAINS = { "get_customer": ["customer"], ... }
+TOOL_DOMAINS = {}
+# --- COMMENTED OUT (zero-regex migration): INVOICE_TOOLS ---
+# INVOICE_TOOLS = {"get_outstanding_sales_invoices", ...}
+INVOICE_TOOLS = set()
 
 _tool_embeddings: dict[str, list[float]] = {}
 
@@ -114,28 +101,30 @@ def _build_tool_embeddings():
         print(f"[WARN] Failed to build tool embeddings: {e}")
         _tool_embeddings.clear()
 
-ERP_AMBIGUOUS_THRESHOLD = 0.30
-_erp_domain_embedding: list[float] | None = None
-
-def _build_erp_domain_embedding() -> list[float]:
-    combined = " ".join(
-        f"{meta.get('description', '')} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
-        for meta in TOOL_INTENT_REGISTRY.values()
-    )
-    return embedding_model.embed_query(combined)
-
+# --- COMMENTED OUT (zero-regex migration): ERP domain embedding for OOD detection ---
+# ERP_AMBIGUOUS_THRESHOLD = 0.30
+# _erp_domain_embedding: list[float] | None = None
+# def _build_erp_domain_embedding() -> list[float]:
+#     combined = " ".join(
+#         f"{meta.get('description', '')} {' '.join(meta.get('aliases', []))} {' '.join(meta.get('keywords', []))}"
+#         for meta in TOOL_INTENT_REGISTRY.values()
+#     )
+#     return embedding_model.embed_query(combined)
+# def max_erp_similarity(query: str) -> float:
+#     global _erp_domain_embedding
+#     if _erp_domain_embedding is None:
+#         try:
+#             _erp_domain_embedding = _build_erp_domain_embedding()
+#         except Exception:
+#             return 0.0
+#     try:
+#         query_emb = embedding_model.embed_query(query)
+#         return _cosine_sim(query_emb, _erp_domain_embedding)
+#     except Exception:
+#         return 0.0
+ERP_AMBIGUOUS_THRESHOLD = 0.0
 def max_erp_similarity(query: str) -> float:
-    global _erp_domain_embedding
-    if _erp_domain_embedding is None:
-        try:
-            _erp_domain_embedding = _build_erp_domain_embedding()
-        except Exception:
-            return 0.0
-    try:
-        query_emb = embedding_model.embed_query(query)
-        return _cosine_sim(query_emb, _erp_domain_embedding)
-    except Exception:
-        return 0.0
+    return 0.0
 
 _TOKENIZER = None
 
@@ -223,79 +212,85 @@ def normalize_tool_name(name: str) -> str:
         name = name.split("=", 1)[0].strip()
     return TOOL_NAME_ALIASES.get(name, name)
 
+# --- COMMENTED OUT (zero-regex migration): date range extraction utilities ---
+# def extract_date_ranges_with_positions(query: str) -> list[dict]:
+#     pattern = r"\b\d{4}-\d{2}-\d{2}\b"
+#     matches = list(re.finditer(pattern, query or ""))
+#     ranges = []
+#     for i in range(0, len(matches) - 1, 2):
+#         ranges.append({
+#             "from": matches[i].group(),
+#             "to": matches[i + 1].group(),
+#             "pos": matches[i].start(),
+#         })
+#     if len(matches) % 2:
+#         print(f"[WARN] Dropped unpaired date: {matches[-1].group()}")
+#     return ranges
+# def nearest_date_range_to_keyword(query: str, keywords: list[str]) -> tuple[str, str]:
+#     q_lower = (query or "").lower()
+#     ranges = extract_date_ranges_with_positions(query)
+#     if not ranges:
+#         return "", ""
+#     keyword_positions = []
+#     for kw in keywords:
+#         idx = q_lower.find(kw.lower())
+#         if idx != -1:
+#             keyword_positions.append(idx)
+#     if not keyword_positions:
+#         return ranges[0]["from"], ranges[0]["to"]
+#     key_pos = min(keyword_positions)
+#     selected = min(ranges, key=lambda r: abs(r["pos"] - key_pos))
+#     return selected["from"], selected["to"]
+# def get_segment_for_tool(query: str, date_keywords: list[str]) -> str:
+#     q = query or ""
+#     q_lower = q.lower()
+#     positions = [q_lower.find(k) for k in date_keywords if q_lower.find(k) != -1]
+#     if not positions:
+#         return q
+#     start = min(positions)
+#     ends = []
+#     for k in SEGMENT_NEXT_KEYWORDS:
+#         idx = q_lower.find(k, start + 1)
+#         if idx != -1 and idx > start:
+#             ends.append(idx)
+#     end = min(ends) if ends else len(q)
+#     return q[start:end]
+# def extract_date_range_for_tool(query: str, date_keywords: list[str]) -> tuple[str, str]:
+#     segment = get_segment_for_tool(query, date_keywords)
+#     ranges = extract_date_ranges_with_positions(segment)
+#     if ranges:
+#         return ranges[0]["from"], ranges[0]["to"]
+#     return nearest_date_range_to_keyword(query, date_keywords)
 def extract_date_ranges_with_positions(query: str) -> list[dict]:
-    pattern = r"\b\d{4}-\d{2}-\d{2}\b"
-    matches = list(re.finditer(pattern, query or ""))
-    ranges = []
-    for i in range(0, len(matches) - 1, 2):
-        ranges.append({
-            "from": matches[i].group(),
-            "to": matches[i + 1].group(),
-            "pos": matches[i].start(),
-        })
-    if len(matches) % 2:
-        print(f"[WARN] Dropped unpaired date: {matches[-1].group()}")
-    return ranges
-
+    return []
 def nearest_date_range_to_keyword(query: str, keywords: list[str]) -> tuple[str, str]:
-    q_lower = (query or "").lower()
-    ranges = extract_date_ranges_with_positions(query)
-    if not ranges:
-        return "", ""
-    keyword_positions = []
-    for kw in keywords:
-        idx = q_lower.find(kw.lower())
-        if idx != -1:
-            keyword_positions.append(idx)
-    if not keyword_positions:
-        return ranges[0]["from"], ranges[0]["to"]
-    key_pos = min(keyword_positions)
-    selected = min(ranges, key=lambda r: abs(r["pos"] - key_pos))
-    return selected["from"], selected["to"]
-
+    return "", ""
 def get_segment_for_tool(query: str, date_keywords: list[str]) -> str:
-    q = query or ""
-    q_lower = q.lower()
-    positions = [q_lower.find(k) for k in date_keywords if q_lower.find(k) != -1]
-    if not positions:
-        return q
-    start = min(positions)
-    ends = []
-    for k in SEGMENT_NEXT_KEYWORDS:
-        idx = q_lower.find(k, start + 1)
-        if idx != -1 and idx > start:
-            ends.append(idx)
-    end = min(ends) if ends else len(q)
-    return q[start:end]
-
+    return query or ""
 def extract_date_range_for_tool(query: str, date_keywords: list[str]) -> tuple[str, str]:
-    segment = get_segment_for_tool(query, date_keywords)
-    ranges = extract_date_ranges_with_positions(segment)
-    if ranges:
-        return ranges[0]["from"], ranges[0]["to"]
-    return nearest_date_range_to_keyword(query, date_keywords)
+    return "", ""
 
 def sanitize_tool_filters(name: str, args: dict) -> dict:
     return args
-
-
 
 def strip_think_tags(text: str) -> str:
     if not text:
         return ""
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
-
+# --- COMMENTED OUT (zero-regex migration): plain English detection ---
+# def is_plain_english_query(query: str) -> bool:
+#     """Check if query is plain English — no Devanagari/Gujarati chars or Hinglish hints."""
+#     q = query.lower().strip()
+#     if not q:
+#         return True
+#     for char in q:
+#         code = ord(char)
+#         if 0x0900 <= code <= 0x097F:
+#             return False
+#         if 0x0A80 <= code <= 0x0AFF:
+#             return False
+#     words = set(q.replace(",", " ").replace("?", " ").split())
+#     return not any(word in words for word in NON_ENGLISH_HINTS)
 def is_plain_english_query(query: str) -> bool:
-    """Check if query is plain English — no Devanagari/Gujarati chars or Hinglish hints."""
-    q = query.lower().strip()
-    if not q:
-        return True
-    for char in q:
-        code = ord(char)
-        if 0x0900 <= code <= 0x097F:
-            return False
-        if 0x0A80 <= code <= 0x0AFF:
-            return False
-    words = set(q.replace(",", " ").replace("?", " ").split())
-    return not any(word in words for word in NON_ENGLISH_HINTS)
+    return False

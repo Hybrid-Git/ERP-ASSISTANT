@@ -2,391 +2,51 @@
 # All hardcoded word lists, thresholds, and constants used in the pipeline are defined here.
 # Edit this file to add cities, language hints, or adjust routing.
 
-cities:
-  - BANGALORE
-  - KOLKATA
-  - MUMBAI
-  - DELHI
-  - SURAT
-  - AHMEDABAD
-  - PUNE
-  - CHENNAI
-  - HYDERABAD
-  - BHIWANDI
-  - TAURU
-  - GUWAHATI
-  - PUNJAB
+# --- COMMENTED OUT (zero-regex migration): cities list ---
+# cities:
+#   - BANGALORE ...
 
-hinglish:
-  non_english_hints:
-    - batao
-    - batavo
-    - dikhao
-    - dakhva
-    - joiye
-    - batana
-    - ka
-    - ke
-    - ki
-    - "no"
-    - "nu"
-    - na
-    - ane
-    - aur
-    - ani
-    - wala
-    - wale
-    - jisme
-    - jema
-    - madhle
-    - kam
-    - ochhi
-    - ochhu
-    - ochha
-    - zyada
-    - vadhu
-    - jast
-    - adhik
-    - baki
-    - thakbaki
-    - khata
-    - hisab
-    - jaththo
-    - satha
-    - mai
-    - jo
-    - hai
-    - uska
-    - uski
-    - uske
-    - chaia
-    - chahiye
-    - chaiye
-    - mera
-    - meri
-    - tere
-    - tera
-    - kya
-    - kaun
-    - konsa
-    - konse
-    - kitna
-    - kitni
-    - yaha
-    - vaha
-    - jiska
-    - jiski
-    - jiske
-    - kyu
-    - kyun
-    - ho
-    - kitne
-    - hamare
-    - hamara
-    - hamari
-    - tu
-    - tera
-    - tere
-    - kaisa
-    - kaise
-    - kaisi
-    - karega
-    - karegi
-    - karlega
-    - karlegi
-    - karunga
-    - karoge
-    - dega
-    - degi
-    - doge
-    - dunga
-    - kar sakte
-    - kar sakta
-    - kar sakti
-    - de sakte
-    - de sakta
-    - de sakti
-    - lia
-    - liye
-    - chai
+# --- COMMENTED OUT (zero-regex migration): hinglish hints ---
+# hinglish:
+#   non_english_hints:
+#     - batao ...
 
-  multilingual_words:
-    - ka
-    - ke
-    - ki
-    - ko
-    - se
-    - me
-    - mein
-    - mai
-    - aur
-    - ane
-    - ani
-    - batao
-    - batavo
-    - dikhao
-    - dakhvo
-    - dakhva
-    - kitna
-    - kitni
-    - kya
-    - rakam
-    - paisa
-    - baki
-    - kam
-    - zyada
-    - vadhu
-    - ochhi
-    - ochhu
-    - grahak
-    - maal
-    - chhe
-    - che
-    - wala
-    - wale
-    - jiska
-    - jinki
-    - jisme
-    - jo
-    - hai
-    - uska
-    - uski
-    - uske
-    - chaia
-    - chahiye
-    - chaiye
-    - jiski
-    - jiske
-    - kyu
-    - kyun
-    - ho
-    - kitne
-    - hamare
-    - hamara
-    - hamari
-    - tu
-    - tera
-    - tere
-    - kaisa
-    - kaise
-    - kaisi
-    - karega
-    - karegi
-    - karlega
-    - karlegi
-    - karunga
-    - karoge
-    - dega
-    - degi
-    - doge
-    - dunga
-    - kar sakte
-    - kar sakta
-    - kar sakti
-    - de sakte
-    - de sakta
-    - de sakti
-    - lia
-    - liye
-    - chai
+# --- COMMENTED OUT (zero-regex migration): multilingual words ---
+#   multilingual_words:
+#     - ka ...
 
-route_keywords:
-  - customer
-  - customer id
-  - party
-  - client
-  - buyer
-  - grahak
-  - opening balance
-  - opening type
-  - ledger
-  - account statement
-  - statement
-  - transactions
-  - closing balance
-  - current balance
-  - khata
-  - hisab
-  - stock
-  - inventory
-  - product
-  - products
-  - item
-  - items
-  - hsn
-  - hsn code
-  - sku
-  - closing quantity
-  - closing qty
-  - low stock
-  - out of stock
-  - maal
-  - jaththo
-  - satha
-  - gst
-  - gst summary
-  - gst report
-  - b2b
-  - b2c
-  - igst
-  - cgst
-  - sgst
-  - tds
-  - tcs
-  - top products
-  - top product
-  - best selling
-  - bestseller
-  - popular products
-  - slow moving products
-  - slow moving
-  - dead stock
-  - sales summary
-  - sales report
-  - overall sales
-  - bikri
-  - vikri
-  - sales trend
-  - sales trends
-  - growth comparison
-  - trend analysis
-  - top customer
-  - top customers
-  - best customer
-  - top vendor
-  - top vendors
-  - top supplier
-  - purchase summary
-  - purchase report
-  - expense summary
-  - kharidi
-  - search ledger
-  - search ledgers
-  - find ledger
-  - ledger search
-  - search vendor
-  - search vendors
-  - find vendor
-  - outstanding sales
-  - outstanding invoices
-  - pending invoices
-  - unpaid invoices
-  - invoice aging
-  - overdue invoices
-  - due invoices
-  - pending payments
-  - outstanding amount
-  - outstanding purchases
-  - outstanding purchase invoices
-  - pending purchase invoices
-  - unpaid purchase invoices
-  - bills payable
-  - creditors
-  - payable invoices
-  - overdue invoices
-  - overdue bills
-  - past due invoices
-  - overdue receivables
-  - overdue payables
+# --- COMMENTED OUT (zero-regex migration): route keywords ---
+# route_keywords:
+#   - customer ...
 
-connectors:
-  - aur
-  - ane
-  - ani
-  - also
-  - and
-  - plus
+# --- COMMENTED OUT (zero-regex migration): connectors ---
+# connectors:
+#   - aur ...
 
-stop_tokens:
-  - KA
-  - CUSTOMER
-  - ID
-  - AUR
-  - NAAM
-  - BATAO
-  - BHI
-  - VALA
-  - DIKHAO
-  - KI
-  - KO
-  - KE
-  - KAA
-  - PAN
+# --- COMMENTED OUT (zero-regex migration): stop tokens ---
+# stop_tokens:
+#   - KA ...
 
-segment_next_keywords:
-  - nykaa
-  - customer id
-  - hsn
-  - gst
-  - b2b
-  - grand total
-  - tds
-  - tcs
-  - sales invoice
-  - purchase invoice
-  - ledger
-  - customer
-  - stock
-  - product
-  - top products
-  - popular products
-  - slow moving products
-  - sales summary
-  - sales trend
-  - top customer
-  - top vendor
-  - purchase summary
-  - search ledger
-  - search vendor
-  - outstanding sales
-  - outstanding invoices
-  - outstanding purchases
-  - overdue invoices
+# --- COMMENTED OUT (zero-regex migration): segment next keywords ---
+# segment_next_keywords:
+#   - nykaa ...
 
 thresholds:
   embedding_recall_min: 0.4
   reranker_top_k: 6
   max_records: 10
 
-# used by wants_unique_party_names()
-party_words:
-  - customer
-  - customers
-  - vendor
-  - vendors
-  - supplier
-  - suppliers
-  - party
-  - parties
-  - grahak
-  - khareedaar
-  - vikreta
-  - aapurti
-  - jinse
-  - jisko
-  - jinko
+# --- COMMENTED OUT (zero-regex migration): party_words ---
+# party_words:
+#   - customer ...
 
-name_words:
-  - name
-  - names
-  - naam
-  - nam
+# --- COMMENTED OUT (zero-regex migration): name_words ---
+# name_words:
+#   - name ...
 
-list_words:
-  - all
-  - list
-  - sare
-  - saare
-  - sab
-  - un sab
-  - unsab
-  - unsabke
-  - jo jo
-  - badha
-  - badha aapje
-  - chaia
-  - chahiye
-  - chaiye
+# --- COMMENTED OUT (zero-regex migration): list_words ---
+# list_words:
+#   - all ...
 
 pretty_field_names:
   id: ID
@@ -456,43 +116,15 @@ pretty_field_names:
   receivablesCount: Receivable Invoices
   payablesCount: Payable Invoices
 
-# ── Identifier extraction patterns ──
-# Used by extract_query_identifiers() in src/utils.py to detect specific lookups.
-# Patterns with capture groups return the captured value; others return full match.
-# Add new invoice/code formats here without touching Python.
-identifier_patterns:
-  invoice_no:
-    - '\bPR[-/]?\d+\b'
-    - '\bA/\d{4}/C\d{4}\b'
-    - '\bAI/\d{4}/\d{4}\b'
-    - '\bAI/\d{2}-\d{2}/\d{3,4}\b'
-    - '\bSI[-/]?\d+\b'
-    - '\bOUT[-/]?\d+\b'
-  party_id:
-    - '\bcustomer\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
-    - '\bparty\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
-    - '\bclient\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
-    - '\bledger\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
-  vendor_id:
-    - '\bvendor\s*(?:id|number|no|#)?\s*[:#-]?\s*(\d+)\b'
-  hsn_code:
-    - '\bHSN\s*[:#-]?\s*(\d{8})\b'
-  sku:
-    - '\bSKU\s*[:#-]?\s*([A-Z0-9-]+)\b'
-  tds_section:
-    - '\b(194[A-Z])\b'
-    - '\b(206[A-Z])\b'
+# --- COMMENTED OUT (zero-regex migration): identifier patterns ---
+# identifier_patterns:
+#   invoice_no:
+#     - ...
 
-# Stopwords used when extracting entity names from tool call args
-name_extraction:
-  stopwords: [the, a, an, of, for, to, in, 'on', ka, ki, ke, ko, se, hai, hain, batao, bata, dikhao, chahiye, chahie, wala, wali, wale, customer, party, vendor, product, invoice, account, id, number, name, all, show, give, list, find, search, tell, get, want, need, uska, uski, uske, kya, aur, any, please, like, about, with, this, that, these, those, sara, sare, saare, sari, saari, sabhi, sab, poora, pure, puri, saara, poori, sabse]
-  min_words: 2
-  max_words: 6
+# --- COMMENTED OUT (zero-regex migration): name_extraction ---
+# name_extraction:
+#   stopwords: [...]
 
-# City/state alias normalization (query alias -> canonical city name)
-city_aliases:
-  bengaluru: BANGALORE
-  bombay: MUMBAI
-  madras: CHENNAI
-  calcutta: KOLKATA
-  new delhi: DELHI
+# --- COMMENTED OUT (zero-regex migration): city aliases ---
+# city_aliases:
+#   bengaluru: BANGALORE ...
