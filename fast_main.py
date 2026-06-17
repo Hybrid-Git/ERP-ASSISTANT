@@ -34,7 +34,8 @@ async def _timeout_iterate(agen, timeout):
         raise TimeoutError()
 
 from src.graph import graph_builder
-from src.config import llm, normalizer_llm, get_cfg
+from src.config import llm, get_cfg
+# from src.config import llm, normalizer_llm, get_cfg
 import session_store
 
 @asynccontextmanager
@@ -295,10 +296,6 @@ async def run_graph_query(
 
     initial_state = {
         "user_query": user_query,
-        "canonical_query": "",
-        "translator_used": False,
-        "translator_confidence": "",
-        "detected_language": "",
         "messages": past_messages or [],
         "retrieved_tools": [],
         "selected_tools": [],
@@ -546,10 +543,6 @@ async def chat_stream(request: ChatRequest):
 
     initial_state = {
         "user_query": request.query,
-        "canonical_query": "",
-        "translator_used": False,
-        "translator_confidence": "",
-        "detected_language": "",
         "messages": past_messages or [],
         "retrieved_tools": [],
         "selected_tools": [],

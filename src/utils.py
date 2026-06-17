@@ -170,9 +170,6 @@ def log_token_usage(response, label: str, input_text: str = None, output_text: s
     total = (prompt_tokens or 0) + (output_tokens or 0)
     print(f"{tag} | model={model} | input={prompt_tokens or 0} | output={output_tokens or 0} | total={total}")
 
-def log_prompt(label: str, text: str):
-    print(f"\n[FULL PROMPT] {label}\n{text}\n[END PROMPT]")
-
 def print_ollama_metadata(response):
     metadata = getattr(response, "response_metadata", {}) or {}
     print("\n========== OLLAMA METADATA ==========")
@@ -287,3 +284,18 @@ def strip_think_tags(text: str) -> str:
     if not text:
         return ""
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+
+def is_plain_english_query(query: str) -> bool:
+    """Check if query is plain English — no Devanagari/Gujarati chars or Hinglish hints."""
+    q = query.lower().strip()
+    if not q:
+        return True
+    for char in q:
+        code = ord(char)
+        if 0x0900 <= code <= 0x097F:
+            return False
+        if 0x0A80 <= code <= 0x0AFF:
+            return False
+    words = set(q.replace(",", " ").replace("?", " ").split())
+    return not any(word in words for word in NON_ENGLISH_HINTS)

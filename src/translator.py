@@ -1,23 +1,25 @@
+# ── Translator node ──
+# Uses normalizer_llm to normalize Hinglish/Hindi/Gujarati queries to clean English.
+# Runs before semantic_search.
+
 import json
 import re
 from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import normalizer_llm
-from src.utils import log_token_usage, log_prompt, extract_json_object, NON_ENGLISH_HINTS, MULTILINGUAL_WORDS, ROUTE_KEYWORDS, INVOICE_PATTERNS, INVOICE_NO_PATTERNS
+from src.utils import log_token_usage, extract_json_object, NON_ENGLISH_HINTS, MULTILINGUAL_WORDS, ROUTE_KEYWORDS, INVOICE_PATTERNS, INVOICE_NO_PATTERNS, is_plain_english_query
 from src.prompts import TRANSLATOR_PROMPT_BASE, META_QUESTION_PATTERNS_GLOBAL, HINGLISH_PRONOUNS, DONO_PRONOUNS, INVOICE_DOC_MAP
 from src.semantic_search import classify_domains
 
 _translation_cache: dict[str, dict] = {}
 _TRANSLATION_CACHE_MAX = 128
 
-
 def _looks_tokenized_query_parts(parts: list[str]) -> bool:
     if not parts or len(parts) <= 2:
         return False
     single_word_count = sum(1 for p in parts if len(str(p).split()) == 1)
     return single_word_count / len(parts) >= 0.7
-
 
 def _has_own_identifiers(query: str) -> bool:
     q = query or ""
@@ -33,16 +35,13 @@ def _has_own_identifiers(query: str) -> bool:
         return True
     return False
 
-
 def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None) -> tuple[str, list[dict]]:
     q_lower = query.lower()
     found = [p for p in HINGLISH_PRONOUNS if re.search(rf'\b{re.escape(p)}\b', q_lower)]
     if not found:
         return query, []
-
     if _has_own_identifiers(query):
         return query, []
-
     entities = (conv_ctx or {}).get("entities", [])
     q_lower_for_match = query.lower()
     for ent in entities:
@@ -53,7 +52,6 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
                 resolved = re.sub(rf'\b{re.escape(p)}\b', '', resolved, flags=re.IGNORECASE)
             resolved = re.sub(r'\s+', ' ', resolved).strip()
             return resolved, [{"original": p, "resolved": "(self-reference)", "type": "self_reference"} for p in found]
-
     is_plural = any(p in DONO_PRONOUNS for p in found)
     if not is_plural:
         focus = (conv_ctx or {}).get("focus_entity")
@@ -63,7 +61,6 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
             for p in found:
                 resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
             return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
-
     entities = (conv_ctx or {}).get("entities", [])
     if entities:
         _skip_entity_resolve = False
@@ -90,7 +87,6 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
                 for p in found:
                     resolved = re.sub(rf'\b{re.escape(p)}\b', name, resolved, flags=re.IGNORECASE)
                 return resolved, [{"original": p, "resolved": name, "type": "any"} for p in found]
-
     if last_tool:
         for tname, targs in last_tool.items():
             filters = targs.get("filters", {}) if isinstance(targs, dict) else {}
@@ -101,34 +97,16 @@ def _resolve_pronouns(query: str, conv_ctx: dict | None, last_tool: dict | None)
                     for p in found:
                         resolved = re.sub(rf'\b{re.escape(p)}\b', str(val), resolved, flags=re.IGNORECASE)
                     return resolved, [{"original": p, "resolved": str(val), "type": "invoice"} for p in found]
-
     return query, []
-
-
-def is_plain_english_query(query: str) -> bool:
-    q = query.lower().strip()
-    if not q:
-        return True
-    for char in q:
-        code = ord(char)
-        if 0x0900 <= code <= 0x097F:
-            return False
-        if 0x0A80 <= code <= 0x0AFF:
-            return False
-    words = set(q.replace(",", " ").replace("?", " ").split())
-    return not any(word in words for word in NON_ENGLISH_HINTS)
-
 
 def needs_translation(query: str) -> bool:
     q = query.lower()
     words = set(re.sub(r"[^\w/.-]+", " ", q).split())
     return bool(words & set(MULTILINGUAL_WORDS))
 
-
 def is_routeable_without_translator(query: str) -> bool:
     q = re.sub(r"\s+", " ", (query or "").lower()).strip()
     return any(keyword in q for keyword in ROUTE_KEYWORDS)
-
 
 def _split_multi_intent(query: str) -> list[str]:
     parts = re.split(r'\s*(?:,|\.|;|\baur\b)\s+', query)
@@ -139,14 +117,12 @@ def _split_multi_intent(query: str) -> list[str]:
             results.append(p)
     return results if len(results) > 1 else [query]
 
-
 def _classify_query_type(query: str) -> str:
     if not query:
         return "unknown"
     if any(re.search(p, query, re.IGNORECASE) for p in META_QUESTION_PATTERNS_GLOBAL):
         return "conversational"
     return "unknown"
-
 
 def _override_document_type(original: str, canonical: str, doc_type: str) -> str:
     combined = f"{original or ''} {canonical or ''}"
@@ -157,7 +133,6 @@ def _override_document_type(original: str, canonical: str, doc_type: str) -> str
                 print(f"[OVERRIDE] document_type: {doc_type} -> {mapped} (matched {domain} pattern)")
                 return mapped
     return doc_type
-
 
 def _build_translator_prompt(
     conversation_context: dict | None = None,
@@ -192,7 +167,6 @@ def _build_translator_prompt(
         lines.append("  → query_parts: ['Show taxable amount of PR-269', 'Show GST details for April']")
     return "\n".join(lines)
 
-
 @traceable(name="translator_node", run_type="chain")
 async def translator_node(state: MainState) -> MainState:
     try:
@@ -200,7 +174,6 @@ async def translator_node(state: MainState) -> MainState:
         user_query = state.get("user_query", "") or ""
         import string
         user_query = user_query.strip().rstrip(string.punctuation + "/\\")
-
         if not user_query:
             return {
                 "original_query": "",
@@ -212,7 +185,6 @@ async def translator_node(state: MainState) -> MainState:
                 "document_type": "unknown",
                 "query_type": "unknown",
             }
-
         if is_plain_english_query(user_query):
             print("Translator skipped: query looks English")
             doc_type = _override_document_type(user_query, user_query, "routeable")
@@ -228,10 +200,8 @@ async def translator_node(state: MainState) -> MainState:
                 "query_parts": _split_multi_intent(user_query),
                 "resolved_entities": [],
             }
-
         if needs_translation(user_query):
             print("Translator: query needs Hinglish/Hindi/Gujarati normalization")
-
             resolved_query, pre_resolved_entities = _resolve_pronouns(
                 user_query,
                 state.get("conversation_context"),
@@ -241,7 +211,6 @@ async def translator_node(state: MainState) -> MainState:
                 print(f"[PRONOUN] Resolved pronouns: {pre_resolved_entities}")
                 print(f"[PRONOUN] Original: {user_query} → Resolved: {resolved_query}")
                 user_query = resolved_query
-
             ctx = state.get("conversation_context") or {}
             ltc = state.get("last_tool_call") or {}
             summary = state.get("summary") or ""
@@ -255,22 +224,16 @@ async def translator_node(state: MainState) -> MainState:
                     last_tool_call=ltc,
                     summary=summary,
                 )
-                log_prompt("normalizer_llm", prompt + "\n" + user_query)
                 response = await normalizer_llm.ainvoke([
                     SystemMessage(content=prompt),
                     HumanMessage(content=user_query),
                 ])
-                import json as _json
-                print(f"[DEBUG TRANSLATOR] response_metadata keys: {list(response.response_metadata.keys())}")
-                print(f"[DEBUG TRANSLATOR] usage_metadata: {response.usage_metadata}")
-                print(f"[DEBUG TRANSLATOR] response_metadata: {_json.dumps({k: str(v)[:200] for k, v in response.response_metadata.items()}, default=str)}")
                 input_text = prompt + "\n" + user_query
                 log_token_usage(response, "translator", input_text=input_text, output_text=response.content)
                 data = extract_json_object(response.content)
                 if len(_translation_cache) >= _TRANSLATION_CACHE_MAX:
                     _translation_cache.pop(next(iter(_translation_cache)))
                 _translation_cache[cache_key] = data
-
             canonical_query = data.get("canonical_query") or user_query
             language = data.get("language", "mixed")
             if language == "hindi" and not re.search(r'[\u0900-\u097F]', user_query):
@@ -280,14 +243,12 @@ async def translator_node(state: MainState) -> MainState:
             query_parts = data.get("query_parts") or []
             llm_resolved = data.get("resolved_entities") or []
             resolved_entities = (pre_resolved_entities or []) + (llm_resolved or [])
-
             final_canonical = user_query if query_type == "conversational" else canonical_query
             if _looks_tokenized_query_parts(query_parts):
                 print(f"[TRANSLATOR FIX] Tokenized query_parts detected: {query_parts} -> using canonical query")
                 query_parts = [final_canonical]
             elif not query_parts:
                 query_parts = [final_canonical]
-
             print("Original query:", user_query)
             print("Canonical query:", canonical_query)
             print("Detected language:", language)
@@ -310,7 +271,6 @@ async def translator_node(state: MainState) -> MainState:
                 "query_parts": query_parts,
                 "resolved_entities": resolved_entities,
             }
-
         if is_routeable_without_translator(user_query):
             print("Translator skipped: query is directly routeable by ERP keywords")
             doc_type = _override_document_type(user_query, user_query, "routeable")
@@ -326,7 +286,6 @@ async def translator_node(state: MainState) -> MainState:
                 "query_parts": _split_multi_intent(user_query),
                 "resolved_entities": [],
             }
-
         print("Translator skipped: no multilingual normalization needed")
         doc_type = _override_document_type(user_query, user_query, "unknown")
         return {

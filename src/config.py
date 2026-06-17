@@ -15,13 +15,12 @@ embedding_model = OpenAIEmbeddings(
 )
 
 normalizer_llm = ChatOpenAI(
-    model=os.getenv("TRANS_LLM_MODEL"),
-    base_url= os.getenv("TRANS_BASE_URL"),
-    api_key= os.getenv("TRANS_MODEL_API_KEY"),
+    model=os.getenv("SUMMARY_LLM_MODEL"),
+    base_url= os.getenv("SUMMARY_BASE_URL"),
+    api_key= os.getenv("SUMMARY_MODEL_API_KEY"),
     temperature=0.0,
     max_tokens=256,
     timeout=60,
-
     extra_body={
         "keep_alive": "5m",
     },
@@ -37,6 +36,7 @@ llm = ChatOpenAI(
 
     extra_body={
         "keep_alive": "5m",
+        "chat_template_kwargs": {"enable_thinking": False},
     },
 )
 summary_llm = ChatOpenAI(
@@ -51,10 +51,6 @@ summary_llm = ChatOpenAI(
         "keep_alive": "5m",
     },
 )
-
-print(f"LLM model loaded: {llm.model}")
-print(f"Embedding model loaded: {embedding_model.model}")
-print("LLM and embedding model initialised!")
 
 # ── API config (env vars) ──
 CHP1_API_BASE_URL = os.getenv("CHP1_API_BASE_URL", "")

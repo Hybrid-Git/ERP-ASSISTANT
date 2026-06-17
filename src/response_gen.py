@@ -4,7 +4,7 @@ from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
-from src.utils import LIST_WORDS, TOOL_DOMAINS, strip_think_tags, log_token_usage, log_prompt, _get_tokenizer
+from src.utils import LIST_WORDS, TOOL_DOMAINS, strip_think_tags, _get_tokenizer
 from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
 
@@ -341,7 +341,6 @@ async def response_generation_node(state: MainState):
 
     try:
         full_content = ""
-        log_prompt("summary_llm", system_prompt + "\n" + human_prompt)
         async for chunk in summary_llm.with_config({"tags": ["response_stream"]}).astream([
             SystemMessage(content=system_prompt),
             HumanMessage(content=human_prompt),

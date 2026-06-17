@@ -11,9 +11,9 @@ from src.tools_api import tools_dict
 from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 from src.config import llm, summary_llm
 from src.utils import (
-    now, sec, log_token_usage, log_prompt, sanitize_tool_filters,
+    now, sec, log_token_usage, sanitize_tool_filters,
     TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
-    extract_date_range_for_tool,strip_think_tags
+    extract_date_range_for_tool, strip_think_tags,
 )
 from src.semantic_search import classify_domains
 from src.prompts import META_QUESTION_PATTERNS_GLOBAL, _REFERENCE_PATTERN
@@ -554,7 +554,6 @@ async def chat_model_node(state: MainState):
             except Exception as schema_e:
                 print(f"[BIND_TOOLS] Error building schema preview: {schema_e}")
 
-            log_prompt("llm", str(loop_input))
             try:
                 response = await llm.bind_tools(remaining_tools, strict=False).ainvoke(loop_input)
             except Exception as e:
@@ -562,7 +561,6 @@ async def chat_model_node(state: MainState):
                 print(f"[RETRY ERROR TRACEBACK] {traceback.format_exc()}")
 
                 break
-            print(f"[6] LLM invoke completed: {sec(step)}s")
             log_token_usage(response, "chat_model")
 
             raw_tool_calls = getattr(response, "tool_calls", None) or []
