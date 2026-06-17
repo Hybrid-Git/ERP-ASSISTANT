@@ -235,6 +235,18 @@ async def translator_node(state: MainState) -> MainState:
                     _translation_cache.pop(next(iter(_translation_cache)))
                 _translation_cache[cache_key] = data
             canonical_query = data.get("canonical_query") or user_query
+            if canonical_query.lower().strip() == user_query.lower().strip():
+                print(f"[TRANSLATOR] Same output as input — treating as untranslated: {canonical_query}")
+                return {
+                    "original_query": user_query,
+                    "canonical_query": user_query,
+                    "user_query": user_query,
+                    "translator_used": False,
+                    "translator_confidence": "low",
+                    "detected_language": "unknown",
+                    "document_type": "unknown",
+                    "query_type": "unknown",
+                }
             language = data.get("language", "mixed")
             if language == "hindi" and not re.search(r'[\u0900-\u097F]', user_query):
                 language = "hinglish"

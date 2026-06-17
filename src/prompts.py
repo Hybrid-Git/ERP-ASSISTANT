@@ -5,20 +5,21 @@ import re
 # A: {"canonical_query":"Why no results found","document_type":"general","language":"hinglish","confidence":"high","query_type":"erp_query"}
 # Q: hamne sabse pehle kya pucha tha
 # A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}
-TRANSLATOR_PROMPT_BASE = """Normalize Hinglish/Hindi/Gujarati → clean English JSON.
+TRANSLATOR_PROMPT_BASE = """Normalize Indian language queries (Hinglish, Gujarati, Hindi, Marathi, Punjabi, Bengali) to clean English JSON.
 
-SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|general","language":"...","confidence":"high|medium|low","query_type":"erp_query|conversational|ood|mixed","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
-
-WORD MAP: bill=sales_invoice, bikri=sales, kharidi=purchase, grahak=customer, baki=outstanding, zyada=greater, dikhao/batao=show, aur=and, kitne/kitna=how_many, kya=what, kyu=why, chaia/chahiye=need, nahi=not, wala/wale=with, sari/saari=all
+SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|vendor|general","language":"...","confidence":"high|medium|low","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
 
 RULES:
-- query_type: "ood" if asking about non-ERP topics (movies, sports, recipes, general knowledge, news, weather, etc.), "conversational" if asking about conversation history (what we discussed, what was asked, recap, etc.), "erp_query" if asking about ERP data (customers/stock/GST/invoices), "mixed" if asking about both history AND data.
-- Preserve IDs/HSN/dates/names. Clean English → language="english", query unchanged. Bare number/name → treat as lookup.
+- If Indian language → translate canonical_query to clean English, set language to the actual detected language (gujarati, hinglish, hindi, etc.)
+- Clean English → language="english", canonical_query unchanged. Do NOT classify Indian language queries as English.
+- Preserve IDs/HSN/dates/names/email/phone/invoice numbers.
+- If query has pronouns and context is given (CONVERSATION CONTEXT section), resolve them in query_parts.
+- query_type: "erp_query" for business data, "conversational" for chat/meta/history, "ood" for non-ERP topics.
+- document_type: sales_invoice/purchase_invoice/customer/product/vendor/general.
 
 EXAMPLES:
-Q: A/0326/C0077 sales bill ka customer name batao
-A: {"canonical_query":"Show customer name for sales invoice A/0326/C0077","document_type":"sales_invoice","language":"hinglish","confidence":"high","query_type":"erp_query"}
-/no_think"""
+Q: tu kon che
+A: {"canonical_query":"Who are you?","document_type":"general","language":"gujarati","confidence":"high"}/no_think"""
 
 META_QUESTION_PATTERNS_GLOBAL = [
     r"what (have|did|was|were|is|are) we (discussed?|talked?|said?|done|covered|asked)",
@@ -54,6 +55,7 @@ GREETING_PATTERNS = [
     r"^(aap|ap)\s+kais[ea]\s+(hain|hai|ho)\s*[!?.]*$",
     r"^(hello|hi|hey|hii|hiii|heyy|holla)\s+how\s+(are|r)\s+(you|u)\s*[!?.]*$",
     r"^(hello|hi|hey|hii|hiii|heyy|holla)\s+(how's|how is)\s+(it|everyone|you|things|going)\s*[!?.]*$",
+    r"^(kem\s+cho|kem\s+che|kem\s+chho|tu\s+kem\s+che)\s*[!?.]*$",
 ]
 
 CAPABILITY_PATTERNS = [
@@ -92,6 +94,8 @@ CAPABILITY_PATTERNS = [
     r"who\s+(are|r)\s+(you|u)",
     r"(aap|tu|tum)\s+kya\s+(ho|hai)",
     r"aap\s+kaun\s+hain",
+    r"tu\s+(kon|su)\s+(che|kare|kari\s*sake)",
+    r"tu\s+mane\s+su\s+(apse?|api\s*sake)",
 ]
 
 # Minimal OOD topic safety net — catches clearly non-ERP queries missed by embedding similarity

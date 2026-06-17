@@ -398,7 +398,7 @@ async def semantic_search(state: MainState) -> MainState:
             print(f"Meta-question detected — no tool needed: {user_query}")
             return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
 
-        if query_type == "conversational":
+        if query_type == "conversational" and state.get("translator_used"):
             print(f"Translator flagged as conversational — no tool needed: {user_query}")
             return {"retrieved_tools": [], "selected_tools": [], "query_parts": query_parts, "skip_router": True}
 
