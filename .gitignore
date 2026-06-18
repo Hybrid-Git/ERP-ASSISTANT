@@ -12,3 +12,4 @@ changes.md
 suggestions.txt
 vllm_runpod_startup.txt
 docs/FIX_PLAN.md
+stream_app.py
