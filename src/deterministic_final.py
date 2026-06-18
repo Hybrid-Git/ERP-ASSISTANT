@@ -409,7 +409,7 @@ async def deterministic_final_node(state: MainState):
     # wants_all = any(kw in combined_q for kw in show_all_keywords)
 
     intent = state.get("query_intent", "sample")
-    intent_max = {"count": 500, "aggregate": 500, "list_all": 10, "comparison": 200, "detail": 200, "sample": 100, "extreme": 1}
+    intent_max = {"count": 500, "aggregate": 500, "list_all": 10, "comparison": 200, "detail": 200, "sample": 10, "extreme": 1}
     MAX_RECORDS = intent_max.get(intent, 10)
     truncation_info = {}
     for tool_name, records in data.items():

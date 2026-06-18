@@ -171,12 +171,14 @@ async def translator_node(state: MainState) -> MainState:
                 "detected_language": "unknown",
                 "document_type": "unknown",
                 "query_type": "unknown",
+                "query_intent": "sample",
             }
         language = data.get("language", "mixed")
         if language == "hindi" and not re.search(r'[\u0900-\u097F]', user_query):
             language = "hinglish"
         confidence = data.get("confidence", "medium")
         query_type = data.get("query_type", "")
+        query_intent = data.get("query_intent", "sample")
         query_parts = data.get("query_parts") or []
         llm_resolved = data.get("resolved_entities") or []
         resolved_entities = (pre_resolved_entities or []) + (llm_resolved or [])
@@ -191,6 +193,7 @@ async def translator_node(state: MainState) -> MainState:
         print("Detected language:", language)
         print("Translator confidence:", confidence)
         print("Query type:", query_type)
+        print("Query intent:", query_intent)
         if query_parts:
             print("Query parts:", query_parts)
         if resolved_entities:
@@ -205,6 +208,7 @@ async def translator_node(state: MainState) -> MainState:
             "detected_language": language,
             "document_type": doc_type,
             "query_type": query_type,
+            "query_intent": query_intent,
             "query_parts": query_parts,
             "resolved_entities": resolved_entities,
         }
@@ -220,5 +224,6 @@ async def translator_node(state: MainState) -> MainState:
             "detected_language": "unknown",
             "document_type": "unknown",
             "query_type": "unknown",
+            "query_intent": "sample",
             "query_parts": [user_query],
         }

@@ -7,21 +7,28 @@ import re
 # # A: {"canonical_query":"What was asked first by us","document_type":"general","language":"hinglish","confidence":"high","query_type":"conversational"}
 TRANSLATOR_PROMPT_BASE = """Normalize Indian language queries (Hinglish, Gujarati, Hindi, Marathi, Punjabi, Bengali) to clean English JSON.
 
-SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|vendor|general","language":"...","confidence":"high|medium|low","query_type":"greeting|capability|erp_query|conversational|ood|ambiguous","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
+SCHEMA: {"canonical_query":"...","document_type":"sales_invoice|purchase_invoice|customer|product|vendor|general","language":"...","confidence":"high|medium|low","query_type":"greeting|capability|erp_query|conversational|ood|ambiguous","query_intent":"count|aggregate|list_all|comparison|detail|sample|extreme","query_parts":["..."],"resolved_entities":[{"original":"...","resolved":"...","type":"..."}]}
 
 RULES:
 - If Indian language → translate canonical_query to clean English, set language to the actual detected language (gujarati, hinglish, hindi, etc.)
 - Clean English → language="english", canonical_query unchanged. Do NOT classify Indian language queries as English.
 - Preserve IDs/HSN/dates/names/email/phone/invoice numbers.
 - If query has pronouns and context is given (CONVERSATION CONTEXT section), resolve them in query_parts.
-- query_type: "greeting" for hello/hi, "capability" for what can you do/who are you, "erp_query" for business data, "conversational" for chat/meta/history, "ood" for non-ERP topics, "ambiguous" for unclear/vague queries.
+- query_type: "greeting" for hello/hi/namaste, "capability" ONLY when the user asks about THIS assistant (who are you/what can you do/kya kar sakte ho), "erp_query" for business data, "conversational" for chat/meta/history/about self, "ood" for ANY non-ERP topic (celebrities, movies, news, weather, sports, history, politics, health, recipes, etc.), "ambiguous" for unclear/vague queries.
+- query_intent: "count" for how many/kitna/ketla/kiti/count, "aggregate" for total/kul/sum/overall, "list_all" for sab/all/every/complete list/sare/list/dikhao/list dikhao/name list, "comparison" for difference/vs/antar, "detail" for details/vistrit/full info/specs, "extreme" for top/bottom/least/most/sabse kam/sabse jyada/sabse, "sample" for default/general lists.
 - document_type: sales_invoice/purchase_invoice/customer/product/vendor/general.
 
 EXAMPLES:
 Q: hi
-A: {"canonical_query":"Hi","document_type":"general","language":"english","confidence":"high","query_type":"greeting"}
+A: {"canonical_query":"Hi","document_type":"general","language":"english","confidence":"high","query_type":"greeting","query_intent":"sample"}
 Q: tu kon che
-A: {"canonical_query":"Who are you?","document_type":"general","language":"gujarati","confidence":"high","query_type":"capability"}/no_think"""
+A: {"canonical_query":"Who are you?","document_type":"general","language":"gujarati","confidence":"high","query_type":"capability","query_intent":"sample"}
+Q: who is avengers
+A: {"canonical_query":"Who is Avengers","document_type":"general","language":"english","confidence":"high","query_type":"ood","query_intent":"sample"}
+Q: kitne top products hai
+A: {"canonical_query":"How many top products are there","document_type":"product","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"count"}
+Q: sab customer dikhao
+A: {"canonical_query":"Show all customers","document_type":"customer","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"list_all"}/no_think"""
 
 META_QUESTION_PATTERNS_GLOBAL = []
 

@@ -108,7 +108,12 @@ async def response_generation_node(state: MainState):
             if isinstance(msg, HumanMessage):
                 original_query = getattr(msg, "content", "") or ""
                 break
-    detected_language = state.get("detected_language") or "auto"
+    detected_language = state.get("detected_language", "") or ""
+    _LANG_EXAMPLES = {
+        "gujarati": "Like: 'hu tamari business data ma help karu chu. customers, stock, GST ni details apvi shaku chu.'",
+        "marathi": "Like: 'mi tumhalya business data madat karu shakto. customers, stock, GST chi mahiti deu shakto.'",
+    }
+    example_suffix = _LANG_EXAMPLES.get(detected_language, "")
     previous_summary = state.get("summary", "") or ""
     conversation_context = state.get("conversation_context", {})
 
@@ -126,20 +131,6 @@ async def response_generation_node(state: MainState):
             system_prompt += f"KNOWN ENTITIES:\n{json.dumps(entities[-3:], indent=2, ensure_ascii=False)}\n\n"
 
     system_prompt += (
-        "LANGUAGE RULE: Reply using the same style of words as the user's query. "
-        "Use ONLY a-z A-Z 0-9 — no non-Latin characters or scripts. "
-        "Mirror the user's words. "
-        "Do NOT switch to pure English if the user didn't use English.\n"
-    )
-    if original_query:
-        system_prompt += (
-            f"WORD-LEVEL MIRROR: The user's query uses words like "
-            f"'{' '.join(original_query.split()[:3])}...'. "
-            f"Reply using the exact same pronouns and helper words they used. "
-            f"Do NOT switch to a different dialect.\n"
-        )
-
-    system_prompt += (
         "TOOL RESULTS are the ONLY truth — never invent fields/values. "
         "Multi-part → answer each. "
         "Never use the word 'sample'.\n"
@@ -149,27 +140,14 @@ async def response_generation_node(state: MainState):
     )
 
     intent = state.get("query_intent", "sample")
-    if intent == "count":
-        system_prompt += (
-            "If truncated, mention total count. "
-            "COUNT ONLY: Report the total number. "
-            "Say the count in the same language style as the user's query. "
-            "Do NOT mention truncation, shown count, or list records. "
-            "Do NOT offer to show more records. "
-            "Answer just the count and nothing else.\n"
-        )
-    else:
-        system_prompt += (
-            "If multiple records, show each as a '- ' bullet, max 1-2 fields per record. "
-            "If truncated, mention total count and ask if user wants to see more. "
-            "End with a natural follow-up question in the user's language style. "
-            "Never use headings or numbered lists.\n"
-        )
 
     final_response_prompt = dict(final_response)
     truncation_info = final_response_prompt.pop("truncation_info", {}) or {}
     summary_text = final_response_prompt.pop("summary", "") or ""
     final_response_prompt.pop("tools_used", None)
+    final_response_prompt.pop("success", None)
+    final_response_prompt.pop("status", None)
+    final_response_prompt.pop("errors", None)
     summary_text = re.sub(r'^[^:]+:\s*', '', summary_text)
     summary_text = re.sub(r';\s*[^:]+:\s*', '; ', summary_text)
     data = final_response_prompt.get("data", {})
@@ -182,6 +160,83 @@ async def response_generation_node(state: MainState):
     final_response_prompt.pop("summary", None)
     final_response_prompt.pop("_invoice_match", None)
     data = final_response_prompt.get("data", {})
+    tool_count = sum(1 for v in data.values() if isinstance(v, list) and len(v) > 0)
+
+    lang_ref = "in the same language as the user"
+
+    # --- Intent-specific response format ---
+    if intent == "count":
+        system_prompt += (
+            "COUNT ONLY: Report the total number. "
+            f"Say the count {lang_ref}. "
+            "Do NOT mention truncation, shown count, or list records. "
+            "Do NOT offer to show more records. "
+            "Answer just the count and nothing else.\n"
+        )
+    elif intent == "aggregate":
+        system_prompt += (
+            "AGGREGATE ONLY: Report the total or sum. "
+            "Just the number — no list, no details. "
+            "Do NOT mention truncation or offer to show more. "
+            f"Answer {lang_ref}.\n"
+        )
+    elif intent == "list_all":
+        system_prompt += (
+            "LIST ALL MODE — show every record the user asked for:\n"
+            "- One per line, starting with '- '\n"
+            "- Just the values — no 'name:' labels\n"
+            "- No intro — start directly with bullet list\n"
+        )
+        if tool_count > 1:
+            system_prompt += (
+                "- MULTIPLE TOOLS HAVE RESULTS — group by section:\n"
+                "  Section header on its own line, then its bullet list.\n"
+                "  Blank line between sections. End with 'Wanna see more of any?'\n"
+            )
+        else:
+            system_prompt += (
+                f"- End with a follow-up question {lang_ref}\n"
+                "- No JSON, code blocks, or headings\n"
+            )
+    elif intent == "extreme":
+        system_prompt += (
+            "EXTREME MODE — top or bottom result only:\n"
+            "State the name and value in a single clear sentence. "
+            "No bullets, no lists. "
+            f"Answer {lang_ref}.\n"
+        )
+    elif intent == "detail":
+        system_prompt += (
+            "DETAIL MODE — show EVERY field of each record:\n"
+            "- key: value on each line\n"
+            "- Blank line between records\n"
+            "- Do NOT skip or truncate any field\n"
+        )
+    elif intent == "comparison":
+        system_prompt += (
+            "COMPARISON MODE — compare both sides clearly:\n"
+            "Show what differs and by how much. "
+            f"Use {lang_ref}. "
+            "No bullets — plain explanation.\n"
+        )
+    else:  # sample (default)
+        system_prompt += (
+            "SAMPLE MODE — show a few example records:\n"
+            "- One per line, starting with '- '\n"
+            "- Just the values — no 'name:' labels\n"
+            "- No intro — start directly with bullet list\n"
+        )
+        if tool_count > 1:
+            system_prompt += (
+                "- MULTIPLE TOOLS HAVE RESULTS — group by section:\n"
+                "  Section header on its own line, then its bullet list.\n"
+                "  Blank line between sections. End with 'Wanna see more of any?'\n"
+            )
+        else:
+            system_prompt += (
+                f"- End with a follow-up question {lang_ref}\n"
+                "- No JSON, code blocks, or headings\n"
+            )
 
     canonical = state.get("canonical_query", "") or ""
     has_range_filter = False
@@ -219,19 +274,6 @@ async def response_generation_node(state: MainState):
         "get_overdue_invoices": "overdue_invoices",
     }
     truncation_note = ""
-    if truncation_info:
-        notes = []
-        for tn, info in truncation_info.items():
-            nice_name = TOOL_KEY_MAP.get(tn, tn.replace("get_", "", 1))
-            notes.append(
-                f"{nice_name}: {info['shown']} total"
-                if info['shown'] >= info['total']
-                else f"{nice_name}: {info['shown']} out of {info['total']} shown"
-            )
-        if intent == "count":
-            truncation_note = f"\nMORE RECORDS AVAILABLE: Total: {'; '.join(notes)}. Report ONLY the total count.\n"
-        else:
-            truncation_note = f"\nMORE RECORDS AVAILABLE: {'; '.join(notes)}. Ask if user wants more.\n"
     tool_data = final_response_prompt.get("data", {})
     if isinstance(tool_data, dict):
         renamed = {}
@@ -292,7 +334,16 @@ async def response_generation_node(state: MainState):
     )
     if summary_text:
         human_prompt += f"For context (do not repeat this verbatim): {summary_text}\n\n"
-    human_prompt += truncation_note + detail_note
+    human_prompt += detail_note
+    if original_query:
+        lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+        human_prompt += (
+            f"\nCRITICAL — The user asked{lang_label}: \"{original_query}\". "
+            f"You MUST respond{lang_label}, in that exact same style. "
+            f"{example_suffix} "
+            f"Do NOT switch to Hindi or English. "
+            f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+        )
 
     try:
         full_content = ""
@@ -310,11 +361,17 @@ async def response_generation_node(state: MainState):
         if not response_text:
             raise ValueError("Empty response from LLM")
         response_text = _clean_llm_response(response_text)
-        response_text = _strip_hallucinated_values(
-            response_text,
-            final_response_prompt.get("data", {}),
-            original_query=original_query,
+        data_has_values = any(
+            isinstance(recs, list) and len(recs) > 0
+            for recs in (final_response_prompt.get("data", {}) or {}).values()
         )
+        list_intents = ("sample", "list_all", "detail")
+        if not (data_has_values and intent in list_intents):
+            response_text = _strip_hallucinated_values(
+                response_text,
+                final_response_prompt.get("data", {}),
+                original_query=original_query,
+            )
         if not response_text.strip():
             raise ValueError("Response had only meta-framing/JSON after cleaning")
         if response_text.strip() and original_query:

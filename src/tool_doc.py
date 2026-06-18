@@ -65,7 +65,7 @@ TOOL_INTENT_REGISTRY = {
     "get_stock_levels": {
         "category": "stock",
         "multi_call_ok": True,
-        "description": "Fetch stock and inventory levels using product name, SKU or HSN; returns closing quantity/value, low stock and out-of-stock details.",
+        "description": "Fetch stock and inventory levels using product name, SKU or HSN; returns closing quantity/value, low stock and out-of-stock details. Use this for listing all products/items with their stock information.",
         "prompt_tips": "HSN: term=HSN_code. Low stock: low_stock_only=true.",
         "aliases": [
             "stock", "inventory", "product", "products", "item", "items",

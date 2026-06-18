@@ -87,10 +87,34 @@ async def semantic_search(state: MainState) -> MainState:
 
         query_type = (state.get("query_type") or "").strip()
 
-        # Translator-classified non-ERP queries get routed directly
+        # Translator-classified non-ERP queries: verify via embedding reranker before skipping
         if query_type in ("greeting", "capability", "conversational", "ood", "ambiguous") and state.get("translator_used"):
-            print(f"Translator classified as {query_type} — no tools needed: {user_query}")
-            return {"retrieved_tools": [], "selected_tools": [], "query_parts": [], "skip_router": True, "query_type": query_type}
+            if not _tool_embeddings:
+                _build_tool_embeddings()
+            if _tool_embeddings:
+                try:
+                    query_emb = embedding_model.embed_query(user_query)
+                    scores = [
+                        _cosine_sim(query_emb, _tool_embeddings[t])
+                        for t in TOOL_INTENT_REGISTRY if t in _tool_embeddings
+                    ]
+                    max_score = max(scores) if scores else 0.0
+                except Exception:
+                    max_score = 0.0
+            else:
+                max_score = 0.0
+
+            if max_score >= 0.65:
+                tools_for_part = score_tools_via_reranker(user_query, TOOL_INTENT_REGISTRY)
+                if tools_for_part:
+                    print(f"Reranker found tools (max_score={max_score:.3f}) for {query_type} query — overriding to erp_query: {tools_for_part}")
+                    query_type = "erp_query"
+                else:
+                    print(f"Translator classified as {query_type} (max_score={max_score:.3f}) — no tools via reranker: {user_query}")
+                    return {"retrieved_tools": [], "selected_tools": [], "query_parts": [], "skip_router": True, "query_type": query_type}
+            else:
+                print(f"Translator classified as {query_type} (max_score={max_score:.3f}) — no tools needed: {user_query}")
+                return {"retrieved_tools": [], "selected_tools": [], "query_parts": [], "skip_router": True, "query_type": query_type}
 
         query_parts = state.get("query_parts") or [user_query]
         print(f"Query parts for tool selection: {query_parts}")
@@ -106,21 +130,30 @@ async def semantic_search(state: MainState) -> MainState:
             else:
                 print(f"No tools found for part '{part}' via reranker")
 
-        # Flatten and deduplicate
+        # Interleave from groups so each query part gets represented
         seen = set()
         selected_tools = []
-        for group in selected_tool_groups:
-            for t in group:
-                if t not in seen:
-                    seen.add(t)
-                    selected_tools.append(t)
+        MAX_TOOLS = 6
+        groups = [g for g in selected_tool_groups if g]
+
+        if groups:
+            max_per_part = max(1, MAX_TOOLS // len(groups))
+            for group in groups:
+                count = 0
+                for t in group:
+                    if t not in seen and len(selected_tools) < MAX_TOOLS:
+                        seen.add(t)
+                        selected_tools.append(t)
+                        count += 1
+                        if count >= max_per_part:
+                            break
+            for group in groups:
+                for t in group:
+                    if t not in seen and len(selected_tools) < MAX_TOOLS:
+                        seen.add(t)
+                        selected_tools.append(t)
 
         selected_tools = [t for t in selected_tools if t in tools_dict]
-
-        MAX_TOOLS = 6
-        if len(selected_tools) > MAX_TOOLS:
-            print(f"Trimming selected_tools from {len(selected_tools)} to {MAX_TOOLS}")
-            selected_tools = selected_tools[:MAX_TOOLS]
 
         if selected_tools:
             print(f"Final selected tools: {selected_tools}")

@@ -154,13 +154,7 @@ CATEGORY_SUMMARIES: dict[str, tuple[str, str]] = {
     "analytics": ("Reports & Analytics", "Top/popular/slow-moving products, sales summary & trends."),
 }
 
-_LANG_RULE = (
-    "Speak the same language the user used. "
-    "Use ONLY a-z A-Z 0-9 and basic punctuation "
-    "— no non-Latin characters or scripts. "
-    "Mirror the user's style. "
-    "Do NOT switch to pure English if the user didn't use English."
-)
+
 
 def _build_capability_text() -> str:
     seen_categories = set()
@@ -300,20 +294,35 @@ async def chat_model_node(state: MainState):
             for name in selected_tools
             if name in tools_dict
         ]
+        _LANG_EXAMPLES = {
+            "gujarati": "Like: 'hu tamari business data ma help karu chu. customers, stock, GST ni details apvi shaku chu.'",
+            "marathi": "Like: 'mi tumhalya business data madat karu shakto. customers, stock, GST chi mahiti deu shakto.'",
+        }
         if not available_tools:
             query_type = (state.get("query_type") or "").strip()
             if query_type == "greeting":
+                original = state.get("original_query", "")
+                canonical = state.get("canonical_query", "")
+                detected_language = state.get("detected_language", "") or ""
+                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 greeting_prompt = (
                     "You are an ERP assistant. The user just greeted you.\n"
+                    f"The user said: \"{original}\"\n"
+                    f"This means: \"{canonical}\"\n\n"
                     "Respond warmly in 1-2 sentences. Vary your greeting each time. "
-                    f"{_LANG_RULE}\n"
-                    "End with: 'Kya dekhna chahenge aap?' or 'What can I help with?'\n"
+                    "End with a follow-up question.\n"
+                    f"CRITICAL — The user asked{lang_label}: \"{original}\". "
+                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"{example_suffix} "
+                    f"Do NOT switch to Hindi or English. "
+                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
                     "/no_think"
                 )
                 try:
                     resp = await summary_llm.ainvoke([
                         SystemMessage(content=greeting_prompt),
-                        HumanMessage(content=state.get("original_query", "")),
+                        HumanMessage(content=user_query),
                     ])
                     reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
@@ -327,17 +336,29 @@ async def chat_model_node(state: MainState):
 
             if query_type == "capability":
                 caps_text = _build_capability_text()
+                original = state.get("original_query", "")
+                canonical = state.get("canonical_query", "")
+                detected_language = state.get("detected_language", "") or ""
+                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 cap_prompt = (
-                    "The user asked what you can do. Present these capabilities naturally:\n"
+                    "The user asked what you can do. These are your capabilities:\n\n"
                     f"{caps_text}\n\n"
-                    f"{_LANG_RULE}\n"
-                    "End with: 'Kaunsa dekhna hai?' or 'Which one would you like to look up?'\n"
+                    f"The user said: \"{original}\"\n"
+                    f"This means: \"{canonical}\"\n\n"
+                    "Present these capabilities naturally in 2-3 sentences. "
+                    "End with a follow-up question.\n"
+                    f"CRITICAL — The user asked{lang_label}: \"{original}\". "
+                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"{example_suffix} "
+                    f"Do NOT switch to Hindi or English. "
+                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
                     "/no_think"
                 )
                 try:
                     resp = await summary_llm.ainvoke([
                         SystemMessage(content=cap_prompt),
-                        HumanMessage(content=state.get("original_query", "")),
+                        HumanMessage(content=user_query),
                     ])
                     reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
@@ -351,18 +372,29 @@ async def chat_model_node(state: MainState):
 
             if query_type == "ambiguous":
                 caps_text = _build_capability_text()
+                original = state.get("original_query", "")
+                canonical = state.get("canonical_query", "")
+                detected_language = state.get("detected_language", "") or ""
+                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 ambig_prompt = (
                     "The user was unclear. Describe what you CAN help with "
                     "in 2-3 friendly sentences with specific examples:\n"
                     f"{caps_text}\n\n"
-                    f"{_LANG_RULE}\n"
+                    f"The user said: \"{original}\"\n"
+                    f"This means: \"{canonical}\"\n\n"
                     "End by asking what they want to look up.\n"
+                    f"CRITICAL — The user asked{lang_label}: \"{original}\". "
+                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"{example_suffix} "
+                    f"Do NOT switch to Hindi or English. "
+                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
                     "/no_think"
                 )
                 try:
                     resp = await summary_llm.ainvoke([
                         SystemMessage(content=ambig_prompt),
-                        HumanMessage(content=state.get("original_query", "")),
+                        HumanMessage(content=user_query),
                     ])
                     reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
@@ -377,18 +409,30 @@ async def chat_model_node(state: MainState):
 
             if query_type == "ood":
                 caps_text = _build_capability_text()
+                caps_flat = caps_text.replace("*", "").replace("- ", "").replace("\n", "; ").strip()
+                original = state.get("original_query", "")
+                canonical = state.get("canonical_query", "")
+                detected_language = state.get("detected_language", "") or ""
+                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 ood_prompt = (
-                    "The user asked something outside my domain — do NOT answer it.\n"
-                    "Instead, present what I CAN help with:\n"
-                    f"{caps_text}\n\n"
-                    f"{_LANG_RULE}\n"
-                    "End by asking what they'd like to look up.\n"
+                    "You are an ERP assistant. The user asked about something outside your domain.\n"
+                    "You MUST refuse to answer. "
+                    "Say you only handle business data and list what you can do. "
+                    "End with a follow-up question.\n"
+                    f"The user said: \"{original}\"\n"
+                    f"This means: \"{canonical}\"\n\n"
+                    f"CRITICAL — The user asked{lang_label}: \"{original}\". "
+                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"{example_suffix} "
+                    f"Do NOT switch to Hindi or English. "
+                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
                     "/no_think"
                 )
                 try:
                     resp = await summary_llm.ainvoke([
                         SystemMessage(content=ood_prompt),
-                        HumanMessage(content=state.get("original_query", "")),
+                        HumanMessage(content=user_query),
                     ])
                     reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 except Exception:
@@ -401,16 +445,27 @@ async def chat_model_node(state: MainState):
                 }
 
             if query_type == "conversational":
+                original = state.get("original_query", "")
+                canonical = state.get("canonical_query", "")
+                detected_language = state.get("detected_language", "") or ""
+                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 conv_prompt = (
                     "You are a friendly ERP assistant having a casual chat. "
+                    f"The user said: \"{original}\"\n"
+                    f"This means: \"{canonical}\"\n\n"
                     "Respond naturally in 1-2 sentences. Vary your responses. "
-                    f"{_LANG_RULE}\n"
                     "End with a natural invitation to help.\n"
+                    f"CRITICAL — The user asked{lang_label}: \"{original}\". "
+                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"{example_suffix} "
+                    f"Do NOT switch to Hindi or English. "
+                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
                     "/no_think"
                 )
                 resp = await summary_llm.ainvoke([
                     SystemMessage(content=conv_prompt),
-                    HumanMessage(content=state.get("original_query", "")),
+                    HumanMessage(content=user_query),
                 ])
                 reason = strip_think_tags((getattr(resp, "content", "") or "").strip())
                 print(f"[CHAT MODEL] Conversational response: {reason}")
@@ -537,7 +592,7 @@ async def chat_model_node(state: MainState):
                 break
             retry_count += 1
             remaining_tools = [
-                t for t in available_tools if t.name in selected_tools
+                t for t in available_tools if t.name in remaining_names
             ]
             if not remaining_tools:
                 break
@@ -564,7 +619,7 @@ async def chat_model_node(state: MainState):
                 print(f"[RETRY ERROR TRACEBACK] {traceback.format_exc()}")
 
                 break
-            log_token_usage(response, "chat_model")
+            log_token_usage(response,"chat_model")
 
             raw_tool_calls = getattr(response, "tool_calls", None) or []
             for call in raw_tool_calls:
