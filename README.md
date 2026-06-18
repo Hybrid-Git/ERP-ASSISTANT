@@ -46,14 +46,14 @@ START
 
 | Node | Responsibility |
 |---|---|
-| `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — 3 fast-path shortcuts. Stores both `original_query` and `canonical_query`. |
-| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking + keyword fallback with word-boundary regex. Splits multi-intent queries. Merges standalone count/aggregation parts (e.g. "total", "how many", "kitne") back into adjacent substantive parts to prevent orphan parts that match no tool. Detects greetings (12 patterns), capability questions (30+ patterns), meta-questions, and unsupported queries. Vague queries with no domain content (e.g. "list do", "batao", "show") route to ambiguous handler instead of selecting tools. Domain-content check uses `VAGUE_ACTION_WORDS` (40 English+Hinglish action words) to exclude generic verbs from domain detection. Classifies query intent (`count`/`aggregate`/`list_all`/`comparison`/`detail`/`sample`) using pattern matching on simplified regex — affects fetch limits and response instructions downstream. Doc-type `maybe_append` fallback tools are only added when no better tool was already selected for a single-intent query. |
+| `translator` | Detects Hinglish/Hindi/Gujarati via Unicode script detection and keyword lists. Only invokes LLM when needed — 3 fast-path shortcuts. Stores both `original_query` and `canonical_query`. Anti-splitting rule: does NOT split mere attributes (with type, with date, etc.) into separate `query_parts` — only splits genuine independent intents. |
+| `semantic_search` | Selects relevant ERP tools via embedding recall (bge-m3) + cross-encoder reranking. Intent-aware `MAX_TOOLS`: 3 for count/aggregate/list_all/extreme, 4 for comparison/detail, 6 for multi-part or sample queries. Interleaves tools across query parts so each part gets represented. Detects greetings, capability questions, meta-questions, and unsupported queries. Vague queries route to ambiguous handler. |
 | `chat_model` | Generates tool calls using `llm.bind_tools().ainvoke()` with internal retry loop (up to 3 rounds). Missing tools are force-injected with domain-aware dedup (one tool per domain). Raises API `limit` parameter per `query_intent` from state (count/aggregate/list_all → 10000, comparison → 1000, detail → 200, sample → 100, extreme → 1). Followed by `_apply_repair` — registry-driven arg fixup handling param aliases, date hallucination detection, category mapping, filter normalization, HSN extraction, multi-identifier expansion, and tool-alignment cross-domain guard. Falls back to `memory_answer` via summary LLM when no tools are selected. Special handlers for greeting, capability, ambiguous, and OOD queries each have an explicit LANGUAGE RULE prohibiting Devanagari output — responses always use Latin script (Hinglish or English). |
 | `routing_node` | Routes to `tools` if last message has tool_calls; to `response_generation` if `memory_answer` is set; otherwise ends. Falls through after `loop_count > 5`. |
 | `tools` | Executes tool functions against the Chapter-1 backend API via `ToolNode`. |
 | `deterministic_final` | Builds final JSON response from tool output using pure Python. Scopes `ToolMessage` content to current turn's `tool_call_ids`. Aggregates errors, deduplicates records, applies GST category filtering, builds `conversation_context` entities. Sets `MAX_RECORDS` per `query_intent` from state (count/aggregate/list_all → 500, comparison/detail → 200, sample → 100, extreme → 1) with `wants_all` override to 200. Always populates `truncation_info` per tool (even when all records fit within cap) so the response generator has accurate totals. The `make_summary` output uses `(e.g., ...)` instead of `(sample: ...)` to avoid leaking the word into LLM responses. |
 | `response_generation` | Generates natural-language response using summary LLM. Three display modes: default (5 records), list_mode (500 records with strict first-line template: "showing X of Y total records" then bullet points), and detail_mode (20 records with all fields for "all details" queries). Intent-specific system prompt instructions: count queries report total from `MORE RECORDS AVAILABLE` note (with Hinglish and English variants), aggregate queries use all records and mention if truncated. Truncation is tracked per-tool (e.g., "customers: 100 out of 500 shown") rather than aggregated across tools to avoid count mismatch. A `TOOL_KEY_MAP` (all 19 tools) converts internal tool names to human-readable data keys in the LLM prompt. System prompt explicitly bans the word "sample" and forbids mentioning internal tool/API names. Post-processes via `_clean_llm_response` (strips meta-framing/JSON) + regex cleanup of any remaining `get_\w+:` tool name patterns. Falls back to summary text or minimal record count on error. |
-| `summarization` | After 6+ human messages, summarizes old context using summary LLM and deletes past messages via `RemoveMessage`. Strips `raw_response` from ToolMessage content before summary input. Caps summary at 16,000 characters. |
+| `summarization` | After 6+ human messages, summarizes old context using summary LLM and deletes past messages via `RemoveMessage`. Converts all message types (Human/AI/Tool) to plain text before sending to the LLM — avoids API incompatibility with raw ToolMessage roles. Compresses oversized ToolMessages in the remaining turn. Caps summary at 16,000 characters. |
 
 ---
 
@@ -194,7 +194,7 @@ When reducing the selected tool list to fit context limits, the trimmer preserve
 - **Value-comparison filters**: "N se jyada/kam" → injects filter params
 - **Malformed filter key normalization**: "closingQty gt: 2" → `{"closingQty": {"gt": 2}}`
 
-### Additional Features
+## Additional Features
 
 - **Conversation memory** with entity tracking and `memory_answer` fallback
 - **Multi-identifier queries** — split into separate tool calls
@@ -203,6 +203,9 @@ When reducing the selected tool list to fit context limits, the trimmer preserve
 - **Search sanitization** — auto-converts bad search terms to empty string
 - **Local sort for stock** — fetches 200 records, sorts locally, truncates to limit
 - **API-level caching** — `OrderedDict` with TTL (600s) and maxsize 100
+- **Final response caching** — `OrderedDict` with TTL (300s), maxsize 500, key includes `COMPANY_ID` prefix to prevent cross-company cache collisions
+- **Translator prompt guard** — `query_parts` splitting rule prevents attribute-level fragmentation; only genuine independent intents are split
+- **Summarization portability** — all message types are converted to plain text before LLM summarization, avoiding API incompatibility with raw `ToolMessage` roles
 
 ---
 

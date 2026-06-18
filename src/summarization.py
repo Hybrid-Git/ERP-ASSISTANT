@@ -1,5 +1,5 @@
 from langsmith import traceable
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, RemoveMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage, RemoveMessage
 from src.schema import MainState
 from src.config import summary_llm
 from src.utils import log_token_usage, _get_tokenizer
@@ -9,6 +9,24 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 limit = int(os.getenv("summary_limit"))
+
+
+def _message_to_text(msg) -> str:
+    if isinstance(msg, HumanMessage):
+        return f"User: {msg.content}"
+    if isinstance(msg, AIMessage):
+        if getattr(msg, "tool_calls", None):
+            calls = [
+                f"{tc.get('name')}({tc.get('args', {})})"
+                for tc in msg.tool_calls
+            ]
+            return f"Assistant called tools: {'; '.join(calls)}"
+        return f"Assistant: {msg.content}"
+    if isinstance(msg, ToolMessage):
+        return f"Tool {msg.name} result: {str(msg.content)[:1000]}"
+    return str(msg)
+
+
 @traceable(name="summarization_node", run_type="chain")
 async def summarization_node(state: MainState):
     print("→ summarization")
@@ -37,7 +55,11 @@ async def summarization_node(state: MainState):
             f"CONVERSATION:\n"
             f"/no_think\n"
         )
-        summary_input = [SystemMessage(content=summary_prompt)] + messages_to_summarize
+        conversation_text = "\n".join(_message_to_text(m) for m in messages_to_summarize)
+        summary_input = [
+            SystemMessage(content=summary_prompt),
+            HumanMessage(content=conversation_text),
+        ]
         response = await summary_llm.ainvoke(summary_input)
         log_token_usage(response, "summarization", input_text=str(summary_input), output_text=response.content)
         new_summary = response.content

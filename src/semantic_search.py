@@ -133,11 +133,19 @@ async def semantic_search(state: MainState) -> MainState:
         # Interleave from groups so each query part gets represented
         seen = set()
         selected_tools = []
-        MAX_TOOLS = 6
+        query_intent = state.get("query_intent", "sample")
+        if len(query_parts) > 1:
+            MAX_TOOLS = 6
+        elif query_intent in ("count", "aggregate", "list_all", "extreme"):
+            MAX_TOOLS = 3
+        elif query_intent in ("comparison", "detail"):
+            MAX_TOOLS = 4
+        else:
+            MAX_TOOLS = 6
         groups = [g for g in selected_tool_groups if g]
 
         if groups:
-            max_per_part = max(1, MAX_TOOLS // len(groups))
+            max_per_part = max(1, min(MAX_TOOLS // max(len(groups), 1), 3))
             for group in groups:
                 count = 0
                 for t in group:

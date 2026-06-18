@@ -14,6 +14,7 @@ RULES:
 - Clean English → language="english", canonical_query unchanged. Do NOT classify Indian language queries as English.
 - Preserve IDs/HSN/dates/names/email/phone/invoice numbers.
 - If query has pronouns and context is given (CONVERSATION CONTEXT section), resolve them in query_parts.
+- query_parts: Split ONLY when the user asks for two or more independent reports/entities. Do NOT split attributes (with type, with date, with amount, with status, with name) into separate parts. Keep attributes inside the same query_part as the main intent. Example: "Show outstanding invoices with their types" -> query_parts=["Show outstanding invoices with invoice types"] NOT: ["Show outstanding invoices", "Include invoice types"]
 - query_type: "greeting" for hello/hi/namaste, "capability" ONLY when the user asks about THIS assistant (who are you/what can you do/kya kar sakte ho), "erp_query" for business data, "conversational" for chat/meta/history/about self, "ood" for ANY non-ERP topic (celebrities, movies, news, weather, sports, history, politics, health, recipes, etc.), "ambiguous" for unclear/vague queries.
 - query_intent: "count" for how many/kitna/ketla/kiti/count, "aggregate" for total/kul/sum/overall, "list_all" for sab/all/every/complete list/sare/list/dikhao/list dikhao/name list, "comparison" for difference/vs/antar, "detail" for details/vistrit/full info/specs, "extreme" for top/bottom/least/most/sabse kam/sabse jyada/sabse, "sample" for default/general lists.
 - document_type: sales_invoice/purchase_invoice/customer/product/vendor/general.
@@ -28,7 +29,11 @@ A: {"canonical_query":"Who is Avengers","document_type":"general","language":"en
 Q: kitne top products hai
 A: {"canonical_query":"How many top products are there","document_type":"product","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"count"}
 Q: sab customer dikhao
-A: {"canonical_query":"Show all customers","document_type":"customer","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"list_all"}/no_think"""
+A: {"canonical_query":"Show all customers","document_type":"customer","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"list_all"}
+Q: outstanding invoice ni list type jode
+A: {"canonical_query":"Show outstanding invoices with invoice types","document_type":"sales_invoice","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"list_all"}
+Q: nykaa bangalore customer aur uska ledger dikhao
+A: {"canonical_query":"Show Nykaa Bangalore customer and their ledger","document_type":"customer","language":"hinglish","confidence":"high","query_type":"erp_query","query_intent":"sample","query_parts":["Show Nykaa Bangalore customer details","Show ledger for Nykaa Bangalore customer"]}/no_think"""
 
 META_QUESTION_PATTERNS_GLOBAL = []
 

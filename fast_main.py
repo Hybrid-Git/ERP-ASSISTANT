@@ -34,7 +34,7 @@ async def _timeout_iterate(agen, timeout):
         raise TimeoutError()
 
 from src.graph import graph_builder
-from src.config import llm, get_cfg
+from src.config import llm, get_cfg, COMPANY_ID
 # from src.config import llm, normalizer_llm, get_cfg
 import session_store
 
@@ -70,7 +70,7 @@ CACHE_LOCK = asyncio.Lock()
 
 
 def normalize_query_for_cache(query: str) -> str:
-    return " ".join((query or "").lower().strip().split())
+    return f"{COMPANY_ID}::{' '.join((query or '').lower().strip().split())}"
 
 
 def should_cache_final_response(result: dict) -> bool:
@@ -651,13 +651,8 @@ async def chat_stream(request: ChatRequest):
                 except Exception:
                     pass
 
-        if response_text:
-            if not tokens_emitted:
-                yield f"data: {json.dumps({'token': response_text})}\n\n"
-            updated = list(messages_tracker)
-            updated.append(AIMessage(content=response_text))
-            session_store.save_session(session_id, updated, summary_tracker,
-                                       context_tracker, last_tool_tracker)
+        if response_text and not tokens_emitted:
+            yield f"data: {json.dumps({'token': response_text})}\n\n"
 
         yield f"data: {json.dumps({'data': stream_data})}\n\n"
         yield f"data: {json.dumps({'session_id': session_id, 'done': True})}\n\n"
