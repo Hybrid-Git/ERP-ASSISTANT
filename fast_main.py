@@ -1,7 +1,5 @@
 from dotenv import load_dotenv
 load_dotenv(override=True)
-import hmac
-from fastapi import Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import APP_API_KEY, CORS_ORIGINS
 import os
@@ -15,7 +13,6 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.messages import  SystemMessage, HumanMessage, AIMessage
 from src.config import llm
-import session_store
 from src.settings_validator import validate_settings
 from src.logging_config import setup_logging
 from fastapi.responses import JSONResponse
@@ -27,7 +24,11 @@ from src.session_helper import _prepare_session, _save_chat_result
 from src.langsmit_utils import _build_langsmith_config
 from src.graph_runner import run_graph_query,graph
 from src.streaming import generate_stream_events
-from src.schema import ChatRequest, CreateSessionRequest, RenameSessionRequest
+from src.schema import ChatRequest
+from src.routes.session_routes import router as session_router
+
+
+
 logger = setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -68,6 +69,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+app.include_router(session_router)
 #Exception handlers
 @app.exception_handler(ERPAssistantError)
 async def erp_error_handler(request, exc: ERPAssistantError):
@@ -84,8 +86,6 @@ async def erp_error_handler(request, exc: ERPAssistantError):
             errors=[exc.user_message],
         ),
     )
-
-
 @app.exception_handler(Exception)
 async def generic_error_handler(request, exc: Exception):
     logger.exception("Unhandled server error")
@@ -99,60 +99,42 @@ async def generic_error_handler(request, exc: Exception):
         ),
     )
 
-
-
-def bearer_token_valid(authorization_header: str) -> bool:
-    if not APP_API_KEY:
-        return True
-
-    parts = (authorization_header or "").strip().split(None, 1)
-
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return False
-
-    return hmac.compare_digest(parts[1].strip(), APP_API_KEY)
-
-
-def require_api_key(request: Request):
-    if not bearer_token_valid(request.headers.get("authorization", "")):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
 @app.get("/health")
 async def health_check():
     return {
         "status": "ok",
         "service": "chapter1-erp-assistant",
     }
+@app.get("/ready")
+async def readiness_check():
+    try:
+        await llm.ainvoke([
+            HumanMessage(content="ping")
+        ])
+
+        return {
+            "status": "ready",
+            "service": "chapter1-erp-assistant",
+        }
+
+    except Exception as e:
+        logger.exception("Readiness check failed")
+
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "error": str(e),
+            },
+        )
 
 # existing routes below
 @app.get("/")
 async def root():
     return {"message": "ERP Assistant API is running"}
 
-
-
-
-
 def get_output_format() -> str:
     return os.getenv("OUTPUT_FORMAT", "text")
-
-
-
-
-
-
-
-
-
-
-
-
-
-# @app.get("/")
-# async def root():
-#     return {"message": "ERP Assistant API is running"}
-
 
 @app.post("/chat")
 async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="format")):
@@ -283,61 +265,6 @@ async def chat_text(request: ChatRequest):
             await format_response_as_chat_text(error_response),
             status_code=500,
         )
-
-
-# ==============================
-# Session Management Endpoints
-# ==============================
-
-
-@app.get("/sessions", dependencies=[Depends(require_api_key)])
-async def api_list_sessions():
-    sessions = session_store.list_sessions()
-    return {"sessions": sessions}
-
-
-@app.post("/sessions", dependencies=[Depends(require_api_key)])
-async def api_create_session(body: CreateSessionRequest):
-    session = session_store.create_session(name=body.name)
-    return {"session": session}
-
-
-@app.delete("/sessions/{session_id}", dependencies=[Depends(require_api_key)])
-async def api_delete_session(session_id: str):
-    deleted = session_store.delete_session(session_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {"deleted": True}
-
-
-@app.patch("/sessions/{session_id}", dependencies=[Depends(require_api_key)])
-async def api_rename_session(session_id: str, body: RenameSessionRequest):
-    updated = session_store.rename_session(session_id, body.name)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {"updated": True}
-
-
-@app.get("/sessions/{session_id}/history", dependencies=[Depends(require_api_key)])
-async def api_session_history(session_id: str):
-    session = session_store.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    messages = session_store.load_messages(session_id)
-    history = []
-    for msg in messages:
-        if msg.type == "tool":
-            continue
-        if msg.type == "ai" and not msg.content and getattr(msg, "tool_calls", None):
-            continue
-        role = msg.type
-        content = msg.content
-        if isinstance(content, list):
-            content = " ".join(
-                b.get("text", "") for b in content if isinstance(b, dict)
-            )
-        history.append({"role": role, "content": content})
-    return {"session_id": session_id, "messages": history}
 
 
 if __name__ == "__main__":
