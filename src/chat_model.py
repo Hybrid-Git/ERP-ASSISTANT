@@ -14,33 +14,10 @@ from src.utils import (
     now, sec, log_token_usage, sanitize_tool_filters,
     strip_think_tags,
 )
-# --- COMMENTED OUT (zero-regex migration): word-list imports ---
-#     TOOL_DOMAINS, INVOICE_NO_PATTERNS, INVOICE_TOOLS,
-#     extract_date_range_for_tool,
-# from src.semantic_search import classify_domains
-# from src.prompts import META_QUESTION_PATTERNS_GLOBAL, _REFERENCE_PATTERN
 from src.prompts import META_QUESTION_PATTERNS_GLOBAL
+import logging
 
-# --- COMMENTED OUT (zero-regex migration): scope words ---
-# SCOPE_WORDS = {
-#     "all", "every", "each",
-#     "sab", "sabhi", "sare", "saare", "sari", "saari",
-#     "poora", "pura", "saara", "har",
-# }
-# DOMAIN_WORDS_FOR_EMPTY_SEARCH = {
-#     "products", "product", "items", "item", "stock", "inventory",
-#     "customers", "customer", "parties", "party",
-#     "vendors", "vendor", "suppliers", "supplier",
-#     "maal", "samaan",
-# }
-# def clean_scope_search_value(value: str) -> str:
-#     if not isinstance(value, str):
-#         return value
-#     q = value.strip().lower()
-#     tokens = set(re.findall(r"[a-z0-9]+", q))
-#     if tokens and tokens <= (SCOPE_WORDS | DOMAIN_WORDS_FOR_EMPTY_SEARCH):
-#         return ""
-#     return value
+logger = logging.getLogger("erp_assistant.chat_model")
 
 
 def _strip_schema_descriptions(tool_schemas: list[dict]) -> list[dict]:
@@ -275,7 +252,7 @@ def build_system_prompt(
 async def chat_model_node(state: MainState):
     node_start = now()
     try:
-        print("→ chat_model")
+        logger.info("Chat model started", extra={"node": "chat_model"})
         step = now()
         original_query = state.get("original_query") or state.get("user_query", "")
         user_query = state.get("canonical_query") or state.get("user_query", "")
@@ -297,15 +274,38 @@ async def chat_model_node(state: MainState):
         _LANG_EXAMPLES = {
             "gujarati": "Like: 'hu tamari business data ma help karu chu. customers, stock, GST ni details apvi shaku chu.'",
             "marathi": "Like: 'mi tumhalya business data madat karu shakto. customers, stock, GST chi mahiti deu shakto.'",
+            "hinglish": "Like: 'Main sirf business data aur ERP systems ke baare mein bata sakta hoon. Thanos jaise fictional topics ke baare mein main nahi jaanta.'",
+            "hindi": "Like: 'Main keval business data aur ERP ki jankari de sakta hoon. Thanos jaise fictional characters ke baare mein nahi bata sakta.'",
         }
         if not available_tools:
             query_type = (state.get("query_type") or "").strip()
+            original = state.get("original_query", "")
+            canonical = state.get("canonical_query", "")
+            detected_language = (state.get("detected_language") or "").strip().lower()
+            lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
+            example_suffix = _LANG_EXAMPLES.get(detected_language, "")
+
+            if detected_language == "english":
+                lang_warning = "Respond in natural English."
+            elif detected_language == "hinglish":
+                lang_warning = (
+                    "Respond in Hinglish (Hindi mixed with English, written in a romanized script). "
+                    "Do NOT respond in plain English, formal Hindi, or native Devanagari script."
+                )
+            elif detected_language == "hindi":
+                lang_warning = (
+                    "Respond in Hindi written in a romanized/transliterated script (using Latin characters). "
+                    "Do NOT respond in plain English or native Devanagari script."
+                )
+            elif detected_language in ("unknown", "auto", ""):
+                lang_warning = "Match the user's language, script, and register. If they write in a romanized script, respond in romanized form."
+            else:
+                lang_warning = (
+                    f"Respond in {detected_language} written in a romanized script (using Roman/Latin alphabet). "
+                    f"Do NOT respond in plain English, Hindi, or native script characters (like Devanagari or Gujarati script)."
+                )
+
             if query_type == "greeting":
-                original = state.get("original_query", "")
-                canonical = state.get("canonical_query", "")
-                detected_language = state.get("detected_language", "") or ""
-                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
-                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 greeting_prompt = (
                     "You are an ERP assistant. The user just greeted you.\n"
                     f"The user said: \"{original}\"\n"
@@ -313,10 +313,10 @@ async def chat_model_node(state: MainState):
                     "Respond warmly in 1-2 sentences. Vary your greeting each time. "
                     "End with a follow-up question.\n"
                     f"CRITICAL — The user asked{lang_label}: \"{original}\". "
-                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"You MUST respond{lang_label}, matching the user's language, script, and register. "
+                    f"If the user writes in a romanized script, you MUST respond in romanized form. "
                     f"{example_suffix} "
-                    f"Do NOT switch to Hindi or English. "
-                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+                    f"{lang_warning}\n"
                     "/no_think"
                 )
                 try:
@@ -336,11 +336,6 @@ async def chat_model_node(state: MainState):
 
             if query_type == "capability":
                 caps_text = _build_capability_text()
-                original = state.get("original_query", "")
-                canonical = state.get("canonical_query", "")
-                detected_language = state.get("detected_language", "") or ""
-                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
-                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 cap_prompt = (
                     "The user asked what you can do. These are your capabilities:\n\n"
                     f"{caps_text}\n\n"
@@ -349,10 +344,10 @@ async def chat_model_node(state: MainState):
                     "Present these capabilities naturally in 2-3 sentences. "
                     "End with a follow-up question.\n"
                     f"CRITICAL — The user asked{lang_label}: \"{original}\". "
-                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"You MUST respond{lang_label}, matching the user's language, script, and register. "
+                    f"If the user writes in a romanized script, you MUST respond in romanized form. "
                     f"{example_suffix} "
-                    f"Do NOT switch to Hindi or English. "
-                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+                    f"{lang_warning}\n"
                     "/no_think"
                 )
                 try:
@@ -372,11 +367,6 @@ async def chat_model_node(state: MainState):
 
             if query_type == "ambiguous":
                 caps_text = _build_capability_text()
-                original = state.get("original_query", "")
-                canonical = state.get("canonical_query", "")
-                detected_language = state.get("detected_language", "") or ""
-                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
-                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 ambig_prompt = (
                     "The user was unclear. Describe what you CAN help with "
                     "in 2-3 friendly sentences with specific examples:\n"
@@ -385,10 +375,10 @@ async def chat_model_node(state: MainState):
                     f"This means: \"{canonical}\"\n\n"
                     "End by asking what they want to look up.\n"
                     f"CRITICAL — The user asked{lang_label}: \"{original}\". "
-                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"You MUST respond{lang_label}, matching the user's language, script, and register. "
+                    f"If the user writes in a romanized script, you MUST respond in romanized form. "
                     f"{example_suffix} "
-                    f"Do NOT switch to Hindi or English. "
-                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+                    f"{lang_warning}\n"
                     "/no_think"
                 )
                 try:
@@ -409,12 +399,6 @@ async def chat_model_node(state: MainState):
 
             if query_type == "ood":
                 caps_text = _build_capability_text()
-                caps_flat = caps_text.replace("*", "").replace("- ", "").replace("\n", "; ").strip()
-                original = state.get("original_query", "")
-                canonical = state.get("canonical_query", "")
-                detected_language = state.get("detected_language", "") or ""
-                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
-                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
                 ood_prompt = (
                     "You are an ERP assistant. The user asked about something outside your domain.\n"
                     "You MUST refuse to answer. "
@@ -423,10 +407,10 @@ async def chat_model_node(state: MainState):
                     f"The user said: \"{original}\"\n"
                     f"This means: \"{canonical}\"\n\n"
                     f"CRITICAL — The user asked{lang_label}: \"{original}\". "
-                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"You MUST respond{lang_label}, matching the user's language, script, and register. "
+                    f"If the user writes in a romanized script, you MUST respond in romanized form. "
                     f"{example_suffix} "
-                    f"Do NOT switch to Hindi or English. "
-                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+                    f"{lang_warning}\n"
                     "/no_think"
                 )
                 try:
@@ -445,22 +429,33 @@ async def chat_model_node(state: MainState):
                 }
 
             if query_type == "conversational":
-                original = state.get("original_query", "")
-                canonical = state.get("canonical_query", "")
-                detected_language = state.get("detected_language", "") or ""
-                lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
-                example_suffix = _LANG_EXAMPLES.get(detected_language, "")
+                history_lines = []
+                if summary:
+                    history_lines.append(f"- Previous conversation summary: {summary}")
+                narrative = _build_memory_context(state.get("messages", []), max_exchanges=5)
+                if narrative:
+                    history_lines.append(f"- Recent conversation context:\n{narrative}")
+                history_context = "\n".join(history_lines) if history_lines else ""
+
                 conv_prompt = (
                     "You are a friendly ERP assistant having a casual chat. "
                     f"The user said: \"{original}\"\n"
                     f"This means: \"{canonical}\"\n\n"
+                )
+                if history_context:
+                    conv_prompt += (
+                        "Use the following conversation context to answer if the user asks about the history, "
+                        "what they asked, what you answered, or references past details. Do not guess or make up details:\n"
+                        f"{history_context}\n\n"
+                    )
+                conv_prompt += (
                     "Respond naturally in 1-2 sentences. Vary your responses. "
                     "End with a natural invitation to help.\n"
                     f"CRITICAL — The user asked{lang_label}: \"{original}\". "
-                    f"You MUST respond{lang_label}, in that exact same style. "
+                    f"You MUST respond{lang_label}, matching the user's language, script, and register. "
+                    f"If the user writes in a romanized script, you MUST respond in romanized form. "
                     f"{example_suffix} "
-                    f"Do NOT switch to Hindi or English. "
-                    f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+                    f"{lang_warning}\n"
                     "/no_think"
                 )
                 resp = await summary_llm.ainvoke([
@@ -499,10 +494,23 @@ async def chat_model_node(state: MainState):
             conversation_context = state.get("conversation_context", {})
             has_messages = bool(state.get("messages"))
             if previous_summary or conversation_context or has_messages:
+                detected_language = (state.get("detected_language") or "").strip().lower()
+                if detected_language == "english":
+                    lang_instruction = "Reply in natural English."
+                elif detected_language == "hinglish":
+                    lang_instruction = "Reply in Hinglish (Hindi mixed with English, written in Latin script/alphabets) like the user."
+                elif detected_language == "hindi":
+                    lang_instruction = "Reply in Hindi written in Latin script (e.g. Hinglish) like the user."
+                elif detected_language in ("unknown", "auto", ""):
+                    lang_instruction = "Reply in a friendly, conversational tone matching the user's language."
+                else:
+                    lang_instruction = f"Reply in {detected_language} (written in Latin/English alphabets — no native script characters) like the user."
+
                 mem_prompt = (
                     "You are an ERP assistant. Answer based ONLY on the conversation history below. "
                     "Do not make up information. If the answer is not in the history, say so plainly. "
-                    "Reply in natural Hinglish (Hindi+English) like the user. NEVER mention tool names, API calls, or technical details.\n\n"
+                    f"{lang_instruction} "
+                    "NEVER mention tool names, API calls, or technical details. Use only Latin characters (a-z A-Z 0-9).\n\n"
                 )
                 if previous_summary:
                     mem_prompt += f"Conversation History:\n{previous_summary}\n\n"

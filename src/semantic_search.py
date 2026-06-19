@@ -8,24 +8,14 @@ from src.utils import (
     _cosine_sim, _build_tool_embeddings, _tool_embeddings,
     normalize_text, add_unique, TH_EMBEDDING_RECALL_MIN, TH_RERANKER_TOP_K,
 )
-# --- COMMENTED OUT (zero-regex migration): word-list based routing ---
-# from src.utils import CONNECTORS, ROUTE_KEYWORDS, DOMAIN_KEYWORDS, INVOICE_PATTERNS, TOOL_DOMAINS, ERP_AMBIGUOUS_THRESHOLD, max_erp_similarity, is_plain_english_query
-# from src.prompts import META_QUESTION_PATTERNS_GLOBAL, GREETING_PATTERNS, CAPABILITY_PATTERNS, OOD_TOPICS, _STOP_WORDS, VAGUE_ACTION_WORDS
+
 from src.tools_api import tools_dict
 from langchain_core.messages import AIMessage
+import logging
+
+logger = logging.getLogger("erp_assistant.semantic_search")
 
 
-# --- COMMENTED OUT (zero-regex migration): domain classification ---
-# def classify_domains(query: str, resolved_entities: list | None = None) -> tuple[set[str], set[str]]:
-#     ...
-
-# --- COMMENTED OUT (zero-regex migration): count/aggregate/intent classification ---
-# _COUNT_LEMMAS = {...}
-# _COUNT_AUX = {...}
-# def _is_count_only(part: str) -> bool: ...
-# def _merge_count_parts(parts: list[str]) -> list[str]: ...
-# def _filter_registry_by_domain(domains: set[str]) -> dict: ...
-# def _classify_intent(*queries: str) -> str: ...
 
 
 def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
@@ -55,35 +45,19 @@ def score_tools_via_reranker(query_part: str, registry: dict) -> list[str]:
     return result
 
 
-# --- COMMENTED OUT (zero-regex migration): not needed with translator query_parts ---
-# def split_query_parts(query: str) -> list[str]: ...
-# def split_query_for_tools(...) -> list[str]: ...
-# def _keyword_fallback(...) -> list[str]: ...
-# def merge_unique_tools(...) -> list[str]: ...
-# def is_multi_intent_query(...) -> bool: ...
-# def _filter_for_list_intent(...) -> list[str]: ...
-# def _keyword_whitelist_filter(...) -> list[str]: ...
-# def _detect_conflict_groups(...) -> list[set[str]]: ...
-# def _apply_mutual_exclusion(...) -> list[str]: ...
-# def _looks_tokenized_query_parts(...) -> bool: ...
-# def _matches_ood_topic(...) -> bool: ...
-# def _get_all_domain_words() -> set[str]: ...
-# def _has_domain_content(parts: list[str]) -> bool: ...
+
 
 
 @traceable(name="semantic_search_node", run_type="retriever")
 async def semantic_search(state: MainState) -> MainState:
     try:
-        print("→ semantic_search")
+        logger.info("Semantic search started", extra={"node": "semantic_search"})
         original_query = state.get("original_query") or state.get("user_query", "") or ""
         canonical_query = state.get("canonical_query", "") or ""
         user_query = canonical_query or original_query
 
         if not user_query:
             return {"retrieved_tools": [], "selected_tools": [], "query_parts": [], "skip_router": True}
-
-        print(f"Original query: {original_query}")
-        print(f"Canonical query: {canonical_query}")
 
         query_type = (state.get("query_type") or "").strip()
 
@@ -117,7 +91,16 @@ async def semantic_search(state: MainState) -> MainState:
                 return {"retrieved_tools": [], "selected_tools": [], "query_parts": [], "skip_router": True, "query_type": query_type}
 
         query_parts = state.get("query_parts") or [user_query]
-        print(f"Query parts for tool selection: {query_parts}")
+        # print(f"Query parts for tool selection: {query_parts}")
+        logger.info(
+                        "Semantic search query prepared",
+                        extra={
+                            "node": "semantic_search",
+                            "original_query": original_query,
+                            "canonical_query": canonical_query,
+                            "query_parts": query_parts,
+                        },
+                    )
 
         selected_tool_groups: list[list[str]] = []
 
@@ -125,11 +108,24 @@ async def semantic_search(state: MainState) -> MainState:
             # Pure embedding-based reranker — no regex, no word-lists
             tools_for_part = score_tools_via_reranker(part, TOOL_INTENT_REGISTRY)
             if tools_for_part:
-                print(f"Reranker tools for part '{part}': {tools_for_part}")
+                logger.info(
+                                "Reranker tools selected for query part",
+                                extra={
+                                    "node": "semantic_search",
+                                    "query_part": part,
+                                    "selected_tools": tools_for_part,
+                                },
+                            )
                 selected_tool_groups.append(tools_for_part)
             else:
-                print(f"No tools found for part '{part}' via reranker")
-
+                logger.info(
+                                "No tools selected for part",
+                                extra={
+                                    "node": "semantic_search",
+                                    "query_part": part,
+                                    "selected_tools": tools_for_part,
+                                },
+                            )
         # Interleave from groups so each query part gets represented
         seen = set()
         selected_tools = []
@@ -164,7 +160,13 @@ async def semantic_search(state: MainState) -> MainState:
         selected_tools = [t for t in selected_tools if t in tools_dict]
 
         if selected_tools:
-            print(f"Final selected tools: {selected_tools}")
+            logger.info(
+                            "Final tools selected",
+                            extra={
+                                "node": "semantic_search",
+                                "selected_tools": selected_tools,
+                            },
+                        )
             return {
                 "retrieved_tools": selected_tools,
                 "selected_tools": selected_tools,

@@ -7,7 +7,12 @@ from src.config import COMPANY_ID
 import time
 import copy
 from collections import OrderedDict
-import asyncio  # noqa: F401
+import asyncio  
+import logging
+
+logger = logging.getLogger("erp_assistant.tools_api")
+
+
 CUSTOMER_ENDPOINT = "/aiAnalytics/customers"
 CUSTOMER_LEDGER_ENDPOINT = "/aiAnalytics/customers/ledger"
 STOCK_LEVELS_ENDPOINT = "/aiAnalytics/inventory/stock"
@@ -53,15 +58,42 @@ async def cached_api_post(endpoint: str, body: dict) -> dict:
         age = now - cached_at
 
         if age <= api_cache_ttl_secs:
-            print(f"[CACHE HIT] {endpoint}")
+            logger.info(
+                        "ERP API cache hit",
+                        extra={
+                            "tool_endpoint": endpoint,
+                            "cache_status": "hit",
+                        },
+                        )
             return copy.deepcopy(cached["result"])
 
-        print(f"[CACHE EXPIRED] {endpoint}")
+        logger.info(
+                    "ERP API cache expired",
+                    extra={
+                        "tool_endpoint": endpoint,
+                        "cache_status": "expired",
+                    },
+                    )
         api_cache.pop(cache_key, None)
 
-    print(f"[CACHE MISS] {endpoint}")
+    logger.info(
+                "ERP API cache miss",
+                extra={
+                    "tool_endpoint": endpoint,
+                    "cache_status": "miss",
+                },
+                )
     result = await api_post(endpoint, body=body)
 
+    logger.info(
+                "ERP API tool result received",
+                extra={
+                    "tool_endpoint": endpoint,
+                    "status": "success" if result.get("success") else "failed",
+                    "status_code": result.get("status_code"),
+                    "record_count": result.get("count"),
+                },
+                )
     api_cache[cache_key] = {
         "cached_at": now,
         "result": copy.deepcopy(result),

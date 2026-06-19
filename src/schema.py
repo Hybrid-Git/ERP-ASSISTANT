@@ -2,7 +2,20 @@ from typing import Annotated, List, TypedDict, Dict, Any
 from operator import add
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
 
+
+class ChatRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    session_id: str = "default_session"
+
+
+class CreateSessionRequest(BaseModel):
+    name: str = ""
+
+
+class RenameSessionRequest(BaseModel):
+    name: str
 
 class InputState(TypedDict):
     user_query : str

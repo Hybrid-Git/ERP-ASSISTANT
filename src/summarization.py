@@ -3,10 +3,13 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from src.schema import MainState
 from src.config import summary_llm
 from src.utils import log_token_usage, _get_tokenizer
-
 import re
 import os
 from dotenv import load_dotenv
+import logging
+
+logger = logging.getLogger("erp_assistant.summarization")
+
 load_dotenv()
 limit = int(os.getenv("summary_limit"))
 
@@ -29,7 +32,7 @@ def _message_to_text(msg) -> str:
 
 @traceable(name="summarization_node", run_type="chain")
 async def summarization_node(state: MainState):
-    print("→ summarization")
+    logger.info("Summarization started", extra={"node": "summarization"})
     messages = state.get("messages", [])
     current_summary = state.get("summary", "")
     try:

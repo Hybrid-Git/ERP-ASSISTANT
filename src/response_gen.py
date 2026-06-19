@@ -5,12 +5,14 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from src.schema import MainState
 from src.config import summary_llm
 from src.utils import strip_think_tags, _get_tokenizer
-# --- COMMENTED OUT (zero-regex migration): word-list imports ---
-# from src.utils import LIST_WORDS, TOOL_DOMAINS
-# from src.prompts import HINGLISH_PRONOUNS
 from src.deterministic_final import make_summary
+import logging
+import os
 
-
+logger = logging.getLogger("erp_assistant.response_gen")
+logger_token = logging.getLogger("erp_assistant.tokens")
+model = os.getenv("LLM_MODEL")
+provider = "sarvamai"
 def _clean_llm_response(text: str) -> str:
     text = re.sub(r'```(?:json)?\s*\n.*?\n```', '', text, flags=re.DOTALL)
     text = text.strip()
@@ -80,7 +82,7 @@ def _strip_hallucinated_values(text: str, tool_data: dict, original_query: str =
 
 @traceable(name="response_generation_node", run_type="chain")
 async def response_generation_node(state: MainState):
-    print("→ response_gen")
+    logger.info("Response generation started", extra={"node": "response_generation"})
     memory_answer = state.get("memory_answer", "")
     final_response = state.get("final_response", {})
     if memory_answer:
@@ -108,12 +110,34 @@ async def response_generation_node(state: MainState):
             if isinstance(msg, HumanMessage):
                 original_query = getattr(msg, "content", "") or ""
                 break
-    detected_language = state.get("detected_language", "") or ""
+    detected_language = (state.get("detected_language") or "").strip().lower()
     _LANG_EXAMPLES = {
         "gujarati": "Like: 'hu tamari business data ma help karu chu. customers, stock, GST ni details apvi shaku chu.'",
         "marathi": "Like: 'mi tumhalya business data madat karu shakto. customers, stock, GST chi mahiti deu shakto.'",
+        "hinglish": "Like: 'Main aapki business data aur ERP systems mein madad kar sakta hoon. Main doosre topics ke baare mein nahi jaanta.'",
+        "hindi": "Like: 'Main keval business data aur ERP ki jankari de sakta hoon. Main anya vishayo ke baare mein nahi bata sakta.'",
     }
     example_suffix = _LANG_EXAMPLES.get(detected_language, "")
+
+    if detected_language == "english":
+        lang_warning = "Respond in natural English."
+    elif detected_language == "hinglish":
+        lang_warning = (
+            "Respond in Hinglish (Hindi mixed with English, written in a romanized script). "
+            "Do NOT respond in plain English, formal Hindi, or native Devanagari script."
+        )
+    elif detected_language == "hindi":
+        lang_warning = (
+            "Respond in Hindi written in a romanized/transliterated script (using Latin characters). "
+            "Do NOT respond in plain English or native Devanagari script."
+        )
+    elif detected_language in ("unknown", "auto", ""):
+        lang_warning = "Match the user's language, script, and register. If they write in a romanized script, respond in romanized form."
+    else:
+        lang_warning = (
+            f"Respond in {detected_language} written in a romanized script (using Roman/Latin alphabet). "
+            f"Do NOT respond in plain English, Hindi, or native script characters (like Devanagari or Gujarati script)."
+        )
     previous_summary = state.get("summary", "") or ""
     conversation_context = state.get("conversation_context", {})
 
@@ -339,10 +363,10 @@ async def response_generation_node(state: MainState):
         lang_label = f" in {detected_language}" if detected_language not in ("unknown", "auto", "") else ""
         human_prompt += (
             f"\nCRITICAL — The user asked{lang_label}: \"{original_query}\". "
-            f"You MUST respond{lang_label}, in that exact same style. "
+            f"You MUST respond{lang_label}, matching the user's language, script, and register. "
+            f"If the user writes in a romanized script, you MUST respond in romanized form. "
             f"{example_suffix} "
-            f"Do NOT switch to Hindi or English. "
-            f"Use ONLY a-z A-Z 0-9 — no native script characters.\n"
+            f"{lang_warning}\n"
         )
 
     try:
@@ -357,7 +381,17 @@ async def response_generation_node(state: MainState):
         enc = _get_tokenizer()
         input_tokens = len(enc.encode(system_prompt + human_prompt))
         output_tokens = len(enc.encode(full_content))
-        print(f"[TOKENS] response_gen | input={input_tokens} | output={output_tokens} | total={input_tokens + output_tokens}")
+        logger.info(
+                    "Token usage",
+                    extra={
+                        "node": "response_gen",
+                        "provider": provider,
+                        "model": model,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens+output_tokens,
+                    },
+                )
         if not response_text:
             raise ValueError("Empty response from LLM")
         response_text = _clean_llm_response(response_text)

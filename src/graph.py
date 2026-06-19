@@ -11,6 +11,10 @@ from src.response_gen import response_generation_node
 import time
 import inspect
 from langgraph.checkpoint.memory import MemorySaver
+import logging
+
+logger = logging.getLogger("erp_assistant.graph")
+
 
 def timed_node(node_name: str, node_func):
     async def wrapper(state):
@@ -25,7 +29,13 @@ def timed_node(node_name: str, node_func):
                 result = node_func(state)
 
             duration = time.perf_counter() - start
-            print(f"[TIMING] {node_name} took {duration:.3f}s")
+            logger.info(
+                        "Node completed",
+                        extra={
+                            "node": node_name,
+                            "duration_sec": round(duration, 3),
+                                },
+                        )
 
             if result is None:
                 result = {}
@@ -45,7 +55,13 @@ def timed_node(node_name: str, node_func):
 
         except Exception as e:
             duration = time.perf_counter() - start
-            print(f"[NODE ERROR] {node_name} failed after {duration:.3f}s: {e}")
+            logger.exception(
+                                "Node failed",
+                                extra={
+                                    "node": node_name,
+                                    "duration_sec": round(duration, 3),
+                                },
+                            )
 
             result = dict(state)
             result["step_timings"] = state.get("step_timings", []) + [{
