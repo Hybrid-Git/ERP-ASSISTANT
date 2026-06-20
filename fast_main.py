@@ -1,32 +1,18 @@
-from dotenv import load_dotenv
-load_dotenv(override=True)
 from fastapi.middleware.cors import CORSMiddleware
-from src.config import APP_API_KEY, CORS_ORIGINS
-import os
-import json
+from src.config import  CORS_ORIGINS,llm
 import time
-import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import PlainTextResponse, StreamingResponse
-from langchain_core.messages import  SystemMessage, HumanMessage, AIMessage
-from src.config import llm
+from fastapi import FastAPI, HTTPException
+from langchain_core.messages import  SystemMessage, HumanMessage
 from src.settings_validator import validate_settings
 from src.logging_config import setup_logging
 from fastapi.responses import JSONResponse
 from src.erp_client import erp_client
 from src.response_utils import make_error_response
 from src.exceptions import ERPAssistantError
-from src.formatters import format_response_as_chat_text
-from src.session_helper import _prepare_session, _save_chat_result
-from src.langsmit_utils import _build_langsmith_config
-from src.graph_runner import run_graph_query,graph
-from src.streaming import generate_stream_events
-from src.schema import ChatRequest
 from src.routes.session_routes import router as session_router
-
+from src.routes.chat_routes import router as chat_router    
 
 
 logger = setup_logging()
@@ -45,7 +31,7 @@ async def lifespan(app: FastAPI):
                     "Worker LLM warmup completed",
                     extra={"duration_sec": round(elapsed_time, 3)}
                     )
-    except Exception as e:
+    except Exception:
         logger.exception("LLM warmup failed; will load on first query")
     yield
     await erp_client.close()
@@ -70,6 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(session_router)
+app.include_router(chat_router)
 #Exception handlers
 @app.exception_handler(ERPAssistantError)
 async def erp_error_handler(request, exc: ERPAssistantError):
@@ -117,14 +104,14 @@ async def readiness_check():
             "service": "chapter1-erp-assistant",
         }
 
-    except Exception as e:
+    except Exception:
         logger.exception("Readiness check failed")
 
         raise HTTPException(
             status_code=503,
             detail={
                 "status": "not_ready",
-                "error": str(e),
+                # "error": str(e),
             },
         )
 
@@ -132,139 +119,6 @@ async def readiness_check():
 @app.get("/")
 async def root():
     return {"message": "ERP Assistant API is running"}
-
-def get_output_format() -> str:
-    return os.getenv("OUTPUT_FORMAT", "text")
-
-@app.post("/chat")
-async def chat(request: ChatRequest, fmt: Optional[str] = Query(None, alias="format")):
-    request_id = str(uuid.uuid4())
-    session_id = request.session_id or "default_session"
-    _, past_messages, past_summary, past_context, past_last_tool = await _prepare_session(session_id)
-    langsmith_config = _build_langsmith_config("CHAPTER1_ASSIST_CHAT", request_id, request.query, session_id)
-
-    try:
-        result = await run_graph_query(
-            user_query=request.query,
-            past_messages=past_messages,
-            past_summary=past_summary,
-            past_conversation_context=past_context,
-            past_last_tool_call=past_last_tool,
-            langsmith_config=langsmith_config,
-        )
-
-        _save_chat_result(session_id, result)
-        result["session_id"] = session_id
-        result.pop("updated_messages", None)
-
-        output_format = fmt or get_output_format()
-
-        if output_format == "text":
-            text = result.get("response_text") or result.get("response")
-            if not isinstance(text, str):
-                text = await format_response_as_chat_text(text)
-            return PlainTextResponse(text)
-
-        return result
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=make_error_response(
-                user_query=request.query,
-                status="server_error",
-                summary="Server error while processing the query.",
-                errors=[str(e)],
-            ),
-        )
-
-
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    request_id = str(uuid.uuid4())
-    session_id = request.session_id or "default_session"
-    _, past_messages, past_summary, past_context, past_last_tool = await _prepare_session(session_id)
-    langsmith_config = _build_langsmith_config(
-        "CHAPTER1_ASSIST_CHAT_STREAM", request_id, request.query, session_id,
-        tags=["fastapi", "langgraph", "erp-assistant", "stream"],
-    )
-
-    initial_state = {
-        "user_query": request.query,
-        "messages": past_messages or [],
-        "retrieved_tools": [],
-        "selected_tools": [],
-        "query_parts": [],
-        "router_decision": {},
-        "skip_router": False,
-        "loop_count": 0,
-        "final_response": "",
-        "tools_utilized": [],
-        "step_timings": [],
-        "document_type": "",
-        "unsupported_parts": [],
-        "summary": past_summary or "",
-        "conversation_context": past_context or {},
-        "last_tool_call": past_last_tool or {},
-    }
-
-    config = {
-        **langsmith_config,
-        "configurable": {"thread_id": session_id},
-    }
-    return StreamingResponse(
-    generate_stream_events(
-        graph=graph,
-        initial_state=initial_state,
-        config=config,
-        session_id=session_id,
-        past_messages=past_messages,
-        past_summary=past_summary,
-        past_context=past_context,
-        past_last_tool=past_last_tool,
-    ),
-    media_type="text/event-stream",
-)
-    
-
-@app.post("/chat-text")
-async def chat_text(request: ChatRequest):
-    request_id = str(uuid.uuid4())
-    session_id = request.session_id or "default_session"
-    _, past_messages, past_summary, past_context, past_last_tool = await _prepare_session(session_id)
-    langsmith_config = _build_langsmith_config(
-        "CHAPTER1_ASSIST_CHAT_TEXT", request_id, request.query, session_id,
-        tags=["fastapi", "langgraph", "erp-assistant", "text-response"],
-    )
-
-    try:
-        result = await run_graph_query(
-            user_query=request.query,
-            past_messages=past_messages,
-            past_summary=past_summary,
-            past_conversation_context=past_context,
-            past_last_tool_call=past_last_tool,
-            langsmith_config=langsmith_config,
-        )
-
-        _save_chat_result(session_id, result)
-        result.pop("updated_messages", None)
-        text = result.get("response_text") or result.get("response")
-        if not isinstance(text, str):
-            text = await format_response_as_chat_text(text)
-        return PlainTextResponse(text)
-
-    except Exception as e:
-        error_response = make_error_response(
-            user_query=request.query,
-            status="server_error",
-            summary="Server error while processing the query.",
-            errors=[str(e)],
-        )
-        return PlainTextResponse(
-            await format_response_as_chat_text(error_response),
-            status_code=500,
-        )
 
 
 if __name__ == "__main__":
