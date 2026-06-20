@@ -6,15 +6,15 @@ import traceback
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage,ToolMessage
-from src.schema import MainState
-from src.tools_api import tools_dict
-from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
-from src.config import llm, summary_llm
-from src.utils import (
+from app.schemas.state import MainState
+from app.services.tools_api import tools_dict
+from app.prompts.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
+from app.core.config import llm, summary_llm
+from app.utils.utils import (
     now, sec, log_token_usage, sanitize_tool_filters,
     strip_think_tags,
 )
-from src.prompts import META_QUESTION_PATTERNS_GLOBAL
+from app.prompts.prompts import META_QUESTION_PATTERNS_GLOBAL
 import logging
 
 logger = logging.getLogger("erp_assistant.chat_model")

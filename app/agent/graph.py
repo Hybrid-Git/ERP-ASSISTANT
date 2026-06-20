@@ -1,13 +1,13 @@
 from langgraph.graph import StateGraph, END, START
-from src.schema import MainState, InputState, OutputState
-from src.semantic_search import semantic_search
-from src.chat_model import chat_model_node
-from src.tools import tools_node
-from src.routing import routing_node
-from src.deterministic_final import deterministic_final_node
-from src.translator import translator_node
-from src.summarization import summarization_node
-from src.response_gen import response_generation_node
+from app.schemas.state import MainState, InputState, OutputState
+from app.agent.semantic_search import semantic_search
+from app.agent.chat_model import chat_model_node
+from app.services.tools import tools_node
+from app.agent.routing import routing_node
+from app.agent.deterministic_final import deterministic_final_node
+from app.agent.translator import translator_node
+from app.agent.summarization import summarization_node
+from app.agent.response_gen import response_generation_node
 import time
 import inspect
 from langgraph.checkpoint.memory import MemorySaver

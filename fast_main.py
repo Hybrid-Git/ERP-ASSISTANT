@@ -1,18 +1,18 @@
 from fastapi.middleware.cors import CORSMiddleware
-from src.config import  CORS_ORIGINS,llm
+from app.core.config import CORS_ORIGINS, llm
 import time
 from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import  SystemMessage, HumanMessage
-from src.settings_validator import validate_settings
-from src.logging_config import setup_logging
+from app.core.settings_validator import validate_settings
+from app.core.logging_config import setup_logging
 from fastapi.responses import JSONResponse
-from src.erp_client import erp_client
-from src.response_utils import make_error_response
-from src.exceptions import ERPAssistantError
-from src.routes.session_routes import router as session_router
-from src.routes.chat_routes import router as chat_router    
+from app.services.erp_client import erp_client
+from app.utils.response_utils import make_error_response
+from app.core.exceptions import ERPAssistantError
+from app.api.routes.session_routes import router as session_router
+from app.api.routes.chat_routes import router as chat_router    
 
 
 logger = setup_logging()

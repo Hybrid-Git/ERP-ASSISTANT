@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import hmac
 
 import session_store
-from src.config import APP_API_KEY
-from src.schema import CreateSessionRequest, RenameSessionRequest
+from app.core.config import APP_API_KEY
+from app.schemas.api import CreateSessionRequest, RenameSessionRequest
 
 router = APIRouter()
 

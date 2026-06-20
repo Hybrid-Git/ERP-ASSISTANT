@@ -2,10 +2,10 @@ import json
 import re
 from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage
-from src.schema import MainState
-from src.config import summary_llm
-from src.utils import strip_think_tags, _get_tokenizer
-from src.deterministic_final import make_summary
+from app.schemas.state import MainState
+from app.core.config import summary_llm
+from app.utils.utils import strip_think_tags, _get_tokenizer
+from app.agent.deterministic_final import make_summary
 import logging
 import os
 

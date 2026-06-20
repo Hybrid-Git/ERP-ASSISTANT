@@ -1,6 +1,6 @@
 import re
 
-from src.config import get_cfg
+from app.core.config import get_cfg
 
 
 _pretty_field_names = get_cfg("pretty_field_names", default={})

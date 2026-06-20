@@ -5,7 +5,7 @@ import logging
 import session_store
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage
 
-from src.graph_runner import GRAPH_TIMEOUT_SECONDS, _timeout_iterate
+from app.agent.graph_runner import GRAPH_TIMEOUT_SECONDS, _timeout_iterate
 
 logger = logging.getLogger("erp_assistant.streaming")
 

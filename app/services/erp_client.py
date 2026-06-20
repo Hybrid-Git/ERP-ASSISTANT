@@ -5,8 +5,8 @@ from typing import Any, Optional
 import httpx
 from langsmith import traceable
 
-from src.config import CHP1_API_BASE_URL, CHP1_API_TIMEOUT, CHP1_API_TOKEN
-from src.exceptions import ERPAPIError
+from app.core.config import CHP1_API_BASE_URL, CHP1_API_TIMEOUT, CHP1_API_TOKEN
+from app.core.exceptions import ERPAPIError
 
 logger = logging.getLogger("erp_assistant.erp_client")
 

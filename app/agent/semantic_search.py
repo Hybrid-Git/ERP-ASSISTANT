@@ -1,15 +1,15 @@
 import re
 from collections import Counter
 from langsmith import traceable
-from src.schema import MainState
-from src.config import embedding_model
-from src.tool_doc import TOOL_INTENT_REGISTRY
-from src.utils import (
+from app.schemas.state import MainState
+from app.core.config import embedding_model
+from app.prompts.tool_doc import TOOL_INTENT_REGISTRY
+from app.utils.utils import (
     _cosine_sim, _build_tool_embeddings, _tool_embeddings,
     normalize_text, add_unique, TH_EMBEDDING_RECALL_MIN, TH_RERANKER_TOP_K,
 )
 
-from src.tools_api import tools_dict
+from app.services.tools_api import tools_dict
 from langchain_core.messages import AIMessage
 import logging
 

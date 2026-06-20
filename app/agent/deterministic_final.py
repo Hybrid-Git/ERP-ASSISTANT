@@ -2,10 +2,10 @@ import json
 import re
 from langsmith import traceable
 from langchain_core.messages import AIMessage, ToolMessage
-from src.schema import MainState
-from src.tool_doc import TOOL_INTENT_REGISTRY
-from src.utils import parse_planner_json_blocks, normalize_text
-from src.config import get_cfg
+from app.schemas.state import MainState
+from app.prompts.tool_doc import TOOL_INTENT_REGISTRY
+from app.utils.utils import parse_planner_json_blocks, normalize_text
+from app.core.config import get_cfg
 import logging
 
 logger = logging.getLogger("erp_assistant.deterministic_final")

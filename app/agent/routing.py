@@ -1,4 +1,4 @@
-from src.schema import MainState
+from app.schemas.state import MainState
 import logging
 
 logger = logging.getLogger("erp_assistant.routing")

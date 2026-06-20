@@ -4,13 +4,13 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from src.formatters import format_response_as_chat_text
-from src.graph_runner import graph, run_graph_query
-from src.langsmit_utils import _build_langsmith_config
-from src.response_utils import make_error_response
-from src.schema import ChatRequest
-from src.session_helper import _prepare_session, _save_chat_result
-from src.streaming import generate_stream_events
+from app.utils.formatters import format_response_as_chat_text
+from app.agent.graph_runner import graph, run_graph_query
+from app.utils.langsmit_utils import _build_langsmith_config
+from app.utils.response_utils import make_error_response
+from app.schemas.api import ChatRequest
+from app.utils.session_helper import _prepare_session, _save_chat_result
+from app.api.routes.streaming import generate_stream_events
 
 router = APIRouter()
 

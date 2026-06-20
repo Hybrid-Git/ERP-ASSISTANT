@@ -6,7 +6,7 @@ import re
 # Business data always comes from the Chapter-1 API.
 # ============================================================
 
-from src.config import get_cfg
+from app.core.config import get_cfg
 
 # --- COMMENTED OUT (zero-regex migration): city words ---
 # CITY_WORDS = get_cfg("cities", default=[

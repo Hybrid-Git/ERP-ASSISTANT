@@ -6,10 +6,10 @@ import json
 import re
 from langsmith import traceable
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from src.schema import MainState
-from src.config import normalizer_llm
-from src.utils import log_token_usage, extract_json_object
-from src.prompts import TRANSLATOR_PROMPT_BASE
+from app.schemas.state import MainState
+from app.core.config import normalizer_llm
+from app.utils.utils import log_token_usage, extract_json_object
+from app.prompts.prompts import TRANSLATOR_PROMPT_BASE
 import logging
 
 logger = logging.getLogger("erp_assistant.translator")

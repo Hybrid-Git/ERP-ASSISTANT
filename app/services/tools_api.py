@@ -2,8 +2,8 @@ from langchain.tools import tool
 import json
 import re  # noqa: F401
 from typing import Optional, Any
-from src.api import api_post
-from src.config import COMPANY_ID
+from app.services.api import api_post
+from app.core.config import COMPANY_ID
 import time
 import copy
 from collections import OrderedDict

@@ -4,8 +4,8 @@ import time
 from types import MappingProxyType
 import numpy as np
 import tiktoken
-from src.config import embedding_model, get_cfg
-from src.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
+from app.core.config import embedding_model, get_cfg
+from app.prompts.tool_doc import TOOL_INTENT_REGISTRY, TOOL_NAME_ALIASES
 import re
 import logging
 import os
